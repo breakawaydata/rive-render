@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-ts:
+    name: Lint TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+
+      - run: npm ci
+        working-directory: ts
+
+      - run: npm run lint
+        working-directory: ts
+
+  lint-cpp:
+    name: Lint C++
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check C++ formatting
+        run: |
+          find native/src -name '*.cpp' -o -name '*.hpp' -o -name '*.h' |
+            grep -v stb_image_write.h |
+            xargs clang-format --dry-run --Werror
+
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            python3 \
+            libvulkan-dev \
+            vulkan-validationlayers \
+            mesa-vulkan-drivers \
+            glslang-tools \
+            ffmpeg
+
+      - name: Cache rive-runtime
+        uses: actions/cache@v4
+        id: cache-rive-runtime
+        with:
+          path: deps/rive-runtime
+          key: rive-runtime-linux-${{ hashFiles('native/premake5.lua') }}
+
+      - name: Clone rive-runtime
+        if: steps.cache-rive-runtime.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/rive-app/rive-runtime.git deps/rive-runtime
+
+      - name: Build native binary
+        run: bash scripts/build-native.sh release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+
+      - name: Install and build TypeScript
+        working-directory: ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run tests
+        working-directory: ts
+        run: npm test
+
+      - name: Upload snapshot diffs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: snapshot-diffs
+          path: |
+            ts/src/test/__image_snapshots__/__diff_output__/
+            ts/src/test/__file_snapshots__/*.actual.*

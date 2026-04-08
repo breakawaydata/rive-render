@@ -1,0 +1,22 @@
+{
+  "name": "@breakawaydata/rive-render-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Platform-specific binary for @breakawaydata/rive-render (macOS ARM64)",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/rive-render"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/breakawaydata/rive-render.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

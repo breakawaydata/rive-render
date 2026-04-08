@@ -30,19 +30,14 @@ static std::vector<uint8_t> readAssetFile(const std::string& path)
 // File listener to know when loading completes
 class QueueFileListener : public CommandQueue::FileListener
 {
-public:
+  public:
     std::atomic<bool> loaded{false};
     std::atomic<bool> errored{false};
     std::string errorMsg;
 
-    void onFileLoaded(const FileHandle, uint64_t) override
-    {
-        loaded.store(true);
-    }
+    void onFileLoaded(const FileHandle, uint64_t) override { loaded.store(true); }
 
-    void onFileError(const FileHandle,
-                     uint64_t,
-                     std::string error) override
+    void onFileError(const FileHandle, uint64_t, std::string error) override
     {
         errorMsg = std::move(error);
         errored.store(true);
@@ -52,55 +47,42 @@ public:
 // Image listener to track async decoding
 class QueueImageListener : public CommandQueue::RenderImageListener
 {
-public:
+  public:
     std::atomic<int> decoded{0};
     std::atomic<int> total{0};
 
-    void onRenderImageDecoded(const RenderImageHandle,
-                              uint64_t) override
-    {
-        decoded.fetch_add(1);
-    }
+    void onRenderImageDecoded(const RenderImageHandle, uint64_t) override { decoded.fetch_add(1); }
 };
 
 // Font listener to track async decoding
 class QueueFontListener : public CommandQueue::FontListener
 {
-public:
+  public:
     std::atomic<int> decoded{0};
     std::atomic<int> total{0};
 
-    void onFontDecoded(const FontHandle, uint64_t) override
-    {
-        decoded.fetch_add(1);
-    }
+    void onFontDecoded(const FontHandle, uint64_t) override { decoded.fetch_add(1); }
 };
 
 // Wait for a condition, pumping messages on the queue
 template <typename Pred>
-static void waitFor(rcp<CommandQueue>& queue,
-                    Pred pred,
-                    const char* what,
-                    int timeoutMs = 10000)
+static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int timeoutMs = 10000)
 {
     auto start = std::chrono::steady_clock::now();
     while (!pred())
     {
         queue->processMessages();
         auto elapsed = std::chrono::steady_clock::now() - start;
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
-                .count() > timeoutMs)
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() > timeoutMs)
         {
-            throw std::runtime_error(
-                std::string("Timeout waiting for: ") + what);
+            throw std::runtime_error(std::string("Timeout waiting for: ") + what);
         }
         std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
     queue->processMessages();
 }
 
-QueueRenderResult renderWithQueue(const Config& config,
-                                  const std::vector<uint8_t>& rivBytes)
+QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes)
 {
     // 1. Create headless renderer
     HeadlessRenderer headless(config.width, config.height);
@@ -116,20 +98,14 @@ QueueRenderResult renderWithQueue(const Config& config,
     {
         // 4. Load file
         QueueFileListener fileListener;
-        auto fileHandle = queue->loadFile(
-            std::vector<uint8_t>(rivBytes.begin(), rivBytes.end()),
-            &fileListener);
+        auto fileHandle =
+            queue->loadFile(std::vector<uint8_t>(rivBytes.begin(), rivBytes.end()), &fileListener);
         waitFor(
-            queue,
-            [&]() {
-                return fileListener.loaded.load() ||
-                       fileListener.errored.load();
-            },
+            queue, [&]() { return fileListener.loaded.load() || fileListener.errored.load(); },
             "file load");
         if (fileListener.errored.load())
         {
-            throw std::runtime_error(
-                "Failed to load .riv: " + fileListener.errorMsg);
+            throw std::runtime_error("Failed to load .riv: " + fileListener.errorMsg);
         }
 
         // 5. Decode referenced assets
@@ -154,60 +130,47 @@ QueueRenderResult renderWithQueue(const Config& config,
         {
             waitFor(
                 queue,
-                [&]() {
-                    return imageListener.decoded.load() >=
-                               imageListener.total.load() &&
-                           fontListener.decoded.load() >=
-                               fontListener.total.load();
+                [&]()
+                {
+                    return imageListener.decoded.load() >= imageListener.total.load() &&
+                           fontListener.decoded.load() >= fontListener.total.load();
                 },
-                "asset decoding",
-                30000);
+                "asset decoding", 30000);
         }
 
         // 6. Instantiate artboard
         auto abHandle = config.artboard.empty()
                             ? queue->instantiateDefaultArtboard(fileHandle)
-                            : queue->instantiateArtboardNamed(
-                                  fileHandle, config.artboard);
+                            : queue->instantiateArtboardNamed(fileHandle, config.artboard);
 
         // Set artboard size
-        queue->setArtboardSize(
-            abHandle,
-            static_cast<float>(config.width),
-            static_cast<float>(config.height));
+        queue->setArtboardSize(abHandle, static_cast<float>(config.width),
+                               static_cast<float>(config.height));
 
         // 7. Instantiate state machine
         auto smHandle = config.stateMachine.empty()
                             ? queue->instantiateDefaultStateMachine(abHandle)
-                            : queue->instantiateStateMachineNamed(
-                                  abHandle, config.stateMachine);
+                            : queue->instantiateStateMachineNamed(abHandle, config.stateMachine);
 
         // 8. Bind view model data (if provided)
         if (!config.viewModelData.properties.empty())
         {
             auto vmHandle = config.viewModelData.instance.empty()
-                                ? queue->instantiateBlankViewModelInstance(
-                                      fileHandle, abHandle)
+                                ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
                                 : queue->instantiateViewModelInstanceNamed(
-                                      fileHandle,
-                                      abHandle,
-                                      config.viewModelData.instance);
+                                      fileHandle, abHandle, config.viewModelData.instance);
 
             // Set properties
             for (auto& [path, prop] : config.viewModelData.properties)
             {
                 if (prop.type == "string")
-                    queue->setViewModelInstanceString(
-                        vmHandle, path, prop.stringValue);
+                    queue->setViewModelInstanceString(vmHandle, path, prop.stringValue);
                 else if (prop.type == "number")
-                    queue->setViewModelInstanceNumber(
-                        vmHandle, path, prop.numberValue);
+                    queue->setViewModelInstanceNumber(vmHandle, path, prop.numberValue);
                 else if (prop.type == "boolean")
-                    queue->setViewModelInstanceBool(
-                        vmHandle, path, prop.boolValue);
+                    queue->setViewModelInstanceBool(vmHandle, path, prop.boolValue);
                 else if (prop.type == "color")
-                    queue->setViewModelInstanceColor(
-                        vmHandle, path, prop.colorValue);
+                    queue->setViewModelInstanceColor(vmHandle, path, prop.colorValue);
             }
         }
 
@@ -219,17 +182,14 @@ QueueRenderResult renderWithQueue(const Config& config,
         if (config.hasScreenshot() && config.screenshot.timestamp > 0)
         {
             float warmupDt = 1.0f / 60.0f;
-            int warmupFrames =
-                static_cast<int>(config.screenshot.timestamp * 60.0f);
+            int warmupFrames = static_cast<int>(config.screenshot.timestamp * 60.0f);
             for (int i = 0; i < warmupFrames; i++)
             {
                 queue->advanceStateMachine(smHandle, warmupDt);
             }
         }
 
-        int totalFrames = config.hasOutput()
-                              ? static_cast<int>(fps * config.output.duration)
-                              : 1;
+        int totalFrames = config.hasOutput() ? static_cast<int>(fps * config.output.duration) : 1;
 
         // 10. Render frames via draw callback
         // Following the Apple runtime pattern: the draw callback receives
@@ -253,37 +213,33 @@ QueueRenderResult renderWithQueue(const Config& config,
                 queue->advanceStateMachine(smHandle, dt);
             }
 
-            queue->draw(
-                drawKey,
-                CommandServerDrawCallback(
-                    [&](DrawKey, CommandServer* srv) {
-                        // Get artboard from server (owns the instance)
-                        auto* artboard =
-                            srv->getArtboardInstance(abHandle);
-                        if (!artboard)
-                        {
-                            std::lock_guard<std::mutex> lock(frameMutex);
-                            frameReady = true;
-                            frameCv.notify_one();
-                            return;
-                        }
+            queue->draw(drawKey, CommandServerDrawCallback(
+                                     [&](DrawKey, CommandServer* srv)
+                                     {
+                                         // Get artboard from server (owns the instance)
+                                         auto* artboard = srv->getArtboardInstance(abHandle);
+                                         if (!artboard)
+                                         {
+                                             std::lock_guard<std::mutex> lock(frameMutex);
+                                             frameReady = true;
+                                             frameCv.notify_one();
+                                             return;
+                                         }
 
-                        // Get render context from server's factory
-                        // (matches Apple runtime: riveContext =
-                        //    static_cast<RenderContext*>(server->factory()))
-                        auto* riveContext =
-                            static_cast<gpu::RenderContext*>(
-                                srv->factory());
+                                         // Get render context from server's factory
+                                         // (matches Apple runtime: riveContext =
+                                         //    static_cast<RenderContext*>(server->factory()))
+                                         auto* riveContext =
+                                             static_cast<gpu::RenderContext*>(srv->factory());
 
-                        // Render the frame using the headless renderer's
-                        // Vulkan infrastructure but the server's artboard
-                        currentFrame =
-                            headless.renderFrame(artboard, nullptr);
+                                         // Render the frame using the headless renderer's
+                                         // Vulkan infrastructure but the server's artboard
+                                         currentFrame = headless.renderFrame(artboard, nullptr);
 
-                        std::lock_guard<std::mutex> lock(frameMutex);
-                        frameReady = true;
-                        frameCv.notify_one();
-                    }));
+                                         std::lock_guard<std::mutex> lock(frameMutex);
+                                         frameReady = true;
+                                         frameCv.notify_one();
+                                     }));
 
             // Wait for frame on main thread
             {

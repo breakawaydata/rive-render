@@ -16,6 +16,9 @@ ts/dist/
 # File snapshot diffs on failure (keep reference .gif/.mp4)
 **/__file_snapshots__/*.actual.*
 
+# Platform binary packages (binaries placed by CI)
+npm/*/bin/
+
 # OS
 .DS_Store
 

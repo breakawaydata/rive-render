@@ -6,20 +6,20 @@
 #include <memory>
 #include <vector>
 
-#include "rive/factory.hpp"
-#include "rive/artboard.hpp"
 #include "rive/animation/state_machine_instance.hpp"
+#include "rive/artboard.hpp"
+#include "rive/factory.hpp"
 #include "rive/renderer/render_context.hpp"
 #include "rive/renderer/rive_renderer.hpp"
 #include "rive/renderer/vulkan/render_context_vulkan_impl.hpp"
 #include "rive/renderer/vulkan/render_target_vulkan.hpp"
-#include "rive_vk_bootstrap/vulkan_instance.hpp"
 #include "rive_vk_bootstrap/vulkan_device.hpp"
 #include "rive_vk_bootstrap/vulkan_headless_frame_synchronizer.hpp"
+#include "rive_vk_bootstrap/vulkan_instance.hpp"
 
 class HeadlessRenderer
 {
-public:
+  public:
     HeadlessRenderer(int width, int height);
     ~HeadlessRenderer();
 
@@ -36,15 +36,14 @@ public:
     int width() const { return m_width; }
     int height() const { return m_height; }
 
-private:
+  private:
     int m_width;
     int m_height;
 
     std::unique_ptr<rive_vkb::VulkanInstance> m_instance;
     std::unique_ptr<rive_vkb::VulkanDevice> m_device;
     std::unique_ptr<rive::gpu::RenderContext> m_renderContext;
-    std::unique_ptr<rive_vkb::VulkanHeadlessFrameSynchronizer>
-        m_frameSynchronizer;
+    std::unique_ptr<rive_vkb::VulkanHeadlessFrameSynchronizer> m_frameSynchronizer;
     rive::rcp<rive::gpu::RenderTargetVulkanImpl> m_renderTarget;
 };
 

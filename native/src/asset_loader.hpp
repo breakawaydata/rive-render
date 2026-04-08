@@ -14,22 +14,21 @@
 #include <map>
 #include <string>
 
-#include "rive/file_asset_loader.hpp"
 #include "rive/assets/file_asset.hpp"
-#include "rive/assets/image_asset.hpp"
 #include "rive/assets/font_asset.hpp"
+#include "rive/assets/image_asset.hpp"
 #include "rive/factory.hpp"
+#include "rive/file_asset_loader.hpp"
 #include "rive/simple_array.hpp"
 
 class MappedAssetLoader : public rive::FileAssetLoader
 {
-public:
+  public:
     // assetName (uniqueFilename or uniqueName) -> local file path
     std::map<std::string, std::string> imagePaths;
     std::map<std::string, std::string> fontPaths;
 
-    bool loadContents(rive::FileAsset& asset,
-                      rive::Span<const uint8_t> inBandBytes,
+    bool loadContents(rive::FileAsset& asset, rive::Span<const uint8_t> inBandBytes,
                       rive::Factory* factory) override
     {
         std::string filename = asset.uniqueFilename();
@@ -73,15 +72,14 @@ public:
         // all loading to it — including embedded assets.
         if (inBandBytes.size() > 0)
         {
-            rive::SimpleArray<uint8_t> arr(inBandBytes.data(),
-                                           inBandBytes.size());
+            rive::SimpleArray<uint8_t> arr(inBandBytes.data(), inBandBytes.size());
             return asset.decode(arr, factory);
         }
 
         return false;
     }
 
-private:
+  private:
     static std::vector<uint8_t> readFile(const std::string& path)
     {
         std::ifstream f(path, std::ios::binary | std::ios::ate);
