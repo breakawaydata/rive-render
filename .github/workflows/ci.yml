@@ -31,11 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install clang-format-18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
       - name: Check C++ formatting
         run: |
           find native/src -name '*.cpp' -o -name '*.hpp' -o -name '*.h' |
             grep -v stb_image_write.h |
-            xargs clang-format --dry-run --Werror
+            xargs clang-format-18 --dry-run --Werror
 
   build-and-test:
     name: Build & Test
