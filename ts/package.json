@@ -1,0 +1,30 @@
+{
+  "name": "@breakaway/rive-render",
+  "version": "0.1.0",
+  "description": "Headless Rive animation renderer - generate GIF/video/screenshots from .riv files",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --forceExit",
+    "test:update": "jest --forceExit -u"
+  },
+  "keywords": [
+    "rive",
+    "animation",
+    "renderer",
+    "gif",
+    "video",
+    "screenshot"
+  ],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/jest-image-snapshot": "^6.4.1",
+    "@types/node": "^22.0.0",
+    "jest": "^30.3.0",
+    "jest-image-snapshot": "^6.5.2",
+    "ts-jest": "^29.4.9",
+    "typescript": "^5.5.0"
+  }
+}

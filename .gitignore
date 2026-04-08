@@ -1,0 +1,27 @@
+# Dependencies
+deps/
+node_modules/
+native/dependencies/
+native/out/
+
+# Build artifacts
+ts/dist/
+*.o
+*.a
+*.dylib
+*.so
+
+# jest-image-snapshot diff output on failure (keep reference PNGs)
+**/__diff_output__/
+# File snapshot diffs on failure (keep reference .gif/.mp4)
+**/__file_snapshots__/*.actual.*
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
