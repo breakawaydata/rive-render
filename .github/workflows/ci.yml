@@ -72,7 +72,16 @@ jobs:
         if: steps.cache-rive-runtime.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/rive-app/rive-runtime.git deps/rive-runtime
 
+      # Cache the full native build output (compiled .o files and binary)
+      - name: Cache native build
+        uses: actions/cache@v4
+        id: cache-native-build
+        with:
+          path: native/out
+          key: native-build-linux-${{ hashFiles('native/src/**', 'native/premake5.lua') }}
+
       - name: Build native binary
+        if: steps.cache-native-build.outputs.cache-hit != 'true'
         run: bash scripts/build-native.sh release
 
       - uses: actions/setup-node@v4
