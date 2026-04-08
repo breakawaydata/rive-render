@@ -462,20 +462,17 @@ describe("Asset Loading", () => {
     failureThresholdType: "percent" as const,
   };
 
-  it("renders embedded assets correctly at t=0", async () => {
-    const image = await renderToPng({
-      rivFile: ASSET_LOAD_CHECK_RIV,
-      width: 400,
-      height: 400,
-      timestamp: 0,
-    });
-    expect(image).toMatchImageSnapshot({
-      ...snapshotConfig,
-      customSnapshotIdentifier: "asset-load-check-t0-400x400",
-    });
-  });
+  // The .riv has embedded assets (cat) and referenced asset slots
+  // (flower-45020.png, sloth-45018.png). We use picture-47982.jpeg
+  // as a substitute for the referenced images to prove loading works.
+  const referencedAssets = {
+    images: {
+      "flower-45020.png": resolve(FIXTURES, "picture-47982.jpeg"),
+      "sloth-45018.png": resolve(FIXTURES, "picture-47982.jpeg"),
+    },
+  };
 
-  it("renders at t=0.5s", async () => {
+  it("embedded assets render without providing references", async () => {
     const image = await renderToPng({
       rivFile: ASSET_LOAD_CHECK_RIV,
       width: 400,
@@ -484,26 +481,74 @@ describe("Asset Loading", () => {
     });
     expect(image).toMatchImageSnapshot({
       ...snapshotConfig,
-      customSnapshotIdentifier: "asset-load-check-t0.5-400x400",
+      customSnapshotIdentifier: "asset-load-check-no-refs-400x400",
     });
   });
 
-  it("GIF — full file match", async () => {
-    const out = await renderToFile("gif", {
+  it("referenced images load and change the render", async () => {
+    // Render without referenced assets
+    const tmpNo = `${TMP}/alc-no-ref.png`;
+    await cli.render({
       rivFile: ASSET_LOAD_CHECK_RIV,
-      fps: 10,
-      duration: 1.0,
+      width: 400,
+      height: 400,
+      screenshot: { path: tmpNo, timestamp: 0.5 },
     });
-    expectFileToMatchReference(out, "asset-load-check-1s-10fps.gif");
+
+    // Render WITH referenced assets
+    const tmpYes = `${TMP}/alc-with-ref.png`;
+    await cli.render({
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      width: 400,
+      height: 400,
+      screenshot: { path: tmpYes, timestamp: 0.5 },
+      assets: referencedAssets,
+    });
+
+    const without = readFileSync(tmpNo);
+    const with_ = readFileSync(tmpYes);
+
+    // Must produce different output — gray placeholders vs loaded images
+    expect(without.equals(with_)).toBe(false);
   });
 
-  it("MP4 — full file match", async () => {
-    const out = await renderToFile("mp4", {
+  it("snapshot with referenced assets loaded", async () => {
+    const tmp = `${TMP}/alc-loaded.png`;
+    await cli.render({
       rivFile: ASSET_LOAD_CHECK_RIV,
-      fps: 30,
-      duration: 1.0,
+      width: 400,
+      height: 400,
+      screenshot: { path: tmp, timestamp: 0.5 },
+      assets: referencedAssets,
     });
-    expectFileToMatchReference(out, "asset-load-check-1s-30fps.mp4");
+    expect(readFileSync(tmp)).toMatchImageSnapshot({
+      ...snapshotConfig,
+      customSnapshotIdentifier: "asset-load-check-with-refs-400x400",
+    });
+  });
+
+  it("GIF with referenced assets — full file match", async () => {
+    const out = `${TMP}/alc-ref.gif`;
+    await cli.render({
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      width: 200,
+      height: 200,
+      output: { format: "gif", path: out, fps: 10, duration: 1.0 },
+      assets: referencedAssets,
+    });
+    expectFileToMatchReference(out, "asset-load-check-refs-1s-10fps.gif");
+  });
+
+  it("MP4 with referenced assets — full file match", async () => {
+    const out = `${TMP}/alc-ref.mp4`;
+    await cli.render({
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      width: 200,
+      height: 200,
+      output: { format: "mp4", path: out, fps: 30, duration: 1.0 },
+      assets: referencedAssets,
+    });
+    expectFileToMatchReference(out, "asset-load-check-refs-1s-30fps.mp4");
   });
 });
 

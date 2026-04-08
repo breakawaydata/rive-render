@@ -32,17 +32,10 @@ public:
                       rive::Span<const uint8_t> inBandBytes,
                       rive::Factory* factory) override
     {
-        // If asset has in-band (embedded) bytes, let the default handle it
-        if (inBandBytes.size() > 0)
-        {
-            return false;
-        }
-
         std::string filename = asset.uniqueFilename();
         std::string name = asset.uniqueName();
 
-
-        // Try image asset
+        // Check if we have a mapped file for this referenced asset
         if (asset.is<rive::ImageAsset>())
         {
             auto it = imagePaths.find(filename);
@@ -59,7 +52,6 @@ public:
             }
         }
 
-        // Try font asset
         if (asset.is<rive::FontAsset>())
         {
             auto it = fontPaths.find(filename);
@@ -74,6 +66,16 @@ public:
                     return asset.as<rive::FontAsset>()->decode(arr, factory);
                 }
             }
+        }
+
+        // For embedded assets with in-band bytes, decode them here.
+        // When a custom FileAssetLoader is provided, the runtime delegates
+        // all loading to it — including embedded assets.
+        if (inBandBytes.size() > 0)
+        {
+            rive::SimpleArray<uint8_t> arr(inBandBytes.data(),
+                                           inBandBytes.size());
+            return asset.decode(arr, factory);
         }
 
         return false;
