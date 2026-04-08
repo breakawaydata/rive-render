@@ -30,6 +30,7 @@
 #include "headless_renderer.hpp"
 #endif
 
+#include "asset_loader.hpp"
 #include "config.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
@@ -172,10 +173,18 @@ int main(int argc, char* argv[])
         return 1;
 #endif
 
+        // Set up asset loader for referenced images/fonts
+        auto assetLoader = rive::make_rcp<MappedAssetLoader>();
+        assetLoader->imagePaths = config.assets.images;
+        assetLoader->fontPaths = config.assets.fonts;
+
         // Import .riv file
+        rive::ImportResult importResult;
         auto file = rive::File::import(
             rive::Span<const uint8_t>(rivBytes.data(), rivBytes.size()),
-            factory);
+            factory,
+            &importResult,
+            std::move(assetLoader));
         if (!file)
         {
             outputJson(false, "", 0, "Failed to import .riv file");

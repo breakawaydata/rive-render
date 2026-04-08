@@ -17,6 +17,7 @@ expect.extend({ toMatchImageSnapshot });
 const FIXTURES = resolve(__dirname, "..", "..", "..", "test", "fixtures");
 const BASKETBALL_RIV = resolve(FIXTURES, "basketball.riv"); // uses LinearAnimation
 const STATEMACHINE_RIV = resolve(FIXTURES, "teststatemachine.riv"); // uses StateMachine
+const ASSET_LOAD_CHECK_RIV = resolve(FIXTURES, "asset_load_check.riv"); // has embedded + referenced asset slots
 const TMP = "/tmp/rive-snapshot-work";
 
 // Reference files saved in repo (images, gifs, mp4s)
@@ -450,6 +451,59 @@ describe("StateMachine", () => {
         customSnapshotIdentifier: `statemachine-mp4-30fps-keyframe-${String(i).padStart(2, "0")}`,
       });
     }
+  });
+});
+
+// ─── Asset Loading (asset_load_check.riv — embedded + referenced slots) ───
+
+describe("Asset Loading", () => {
+  const snapshotConfig = {
+    failureThreshold: 0.001,
+    failureThresholdType: "percent" as const,
+  };
+
+  it("renders embedded assets correctly at t=0", async () => {
+    const image = await renderToPng({
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      width: 400,
+      height: 400,
+      timestamp: 0,
+    });
+    expect(image).toMatchImageSnapshot({
+      ...snapshotConfig,
+      customSnapshotIdentifier: "asset-load-check-t0-400x400",
+    });
+  });
+
+  it("renders at t=0.5s", async () => {
+    const image = await renderToPng({
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      width: 400,
+      height: 400,
+      timestamp: 0.5,
+    });
+    expect(image).toMatchImageSnapshot({
+      ...snapshotConfig,
+      customSnapshotIdentifier: "asset-load-check-t0.5-400x400",
+    });
+  });
+
+  it("GIF — full file match", async () => {
+    const out = await renderToFile("gif", {
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      fps: 10,
+      duration: 1.0,
+    });
+    expectFileToMatchReference(out, "asset-load-check-1s-10fps.gif");
+  });
+
+  it("MP4 — full file match", async () => {
+    const out = await renderToFile("mp4", {
+      rivFile: ASSET_LOAD_CHECK_RIV,
+      fps: 30,
+      duration: 1.0,
+    });
+    expectFileToMatchReference(out, "asset-load-check-1s-30fps.mp4");
   });
 });
 
