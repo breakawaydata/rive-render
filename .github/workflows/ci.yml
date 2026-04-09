@@ -79,7 +79,7 @@ jobs:
         id: cache-native-build
         with:
           path: native/out
-          key: native-build-linux-${{ hashFiles('native/src/**', 'native/premake5.lua') }}
+          key: native-build-linux-${{ hashFiles('native/src/**', 'native/premake5.lua', 'scripts/build-native.sh') }}
 
       - name: Build native binary
         if: steps.cache-native-build.outputs.cache-hit != 'true'

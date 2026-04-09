@@ -123,7 +123,7 @@ jobs:
           node-version: 22
           registry-url: "https://npm.pkg.github.com"
 
-      - name: Extract version from tag
+      - name: Extract and validate version from tag
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -132,6 +132,10 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
