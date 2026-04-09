@@ -2,41 +2,47 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { platform, arch } from "os";
 
+const SUPPORTED_PLATFORMS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
+];
+
 export function resolveBinary(): string {
   // 1. Check RIVE_RENDER_BINARY env var
   if (process.env.RIVE_RENDER_BINARY) {
     return process.env.RIVE_RENDER_BINARY;
   }
 
-  // 2. Check platform-specific optional dependency package
   const platformKey = `${platform()}-${arch()}`;
-  const packageMap: Record<string, string> = {
-    "darwin-arm64": "@breakawaydata/rive-render-darwin-arm64",
-    "darwin-x64": "@breakawaydata/rive-render-darwin-x64",
-    "linux-x64": "@breakawaydata/rive-render-linux-x64",
-    "linux-arm64": "@breakawaydata/rive-render-linux-arm64",
-  };
 
-  const pkg = packageMap[platformKey];
-  if (pkg) {
-    try {
-      return require.resolve(`${pkg}/bin/rive-render`);
-    } catch {
-      // Not installed, fall through
-    }
+  // 2. Check for postinstall-downloaded binary (bin/ within this package)
+  const postinstallBinary = join(__dirname, "..", "bin", "rive-render");
+  if (existsSync(postinstallBinary)) {
+    return postinstallBinary;
   }
 
-  // 3. Check local build (relative to this package)
-  const localPaths = [
-    join(__dirname, "..", "..", "native", "out", "release", "rive_render"),
-    join(__dirname, "..", "bin", "rive-render"),
-  ];
-  for (const p of localPaths) {
-    if (existsSync(p)) return p;
+  // 3. Check local development build
+  const localBuild = join(
+    __dirname,
+    "..",
+    "..",
+    "native",
+    "out",
+    "release",
+    "rive_render"
+  );
+  if (existsSync(localBuild)) {
+    return localBuild;
   }
+
+  const supportedMsg = SUPPORTED_PLATFORMS.includes(platformKey)
+    ? "The postinstall binary download may have failed. Try reinstalling the package."
+    : `Platform ${platformKey} is not supported (supported: ${SUPPORTED_PLATFORMS.join(", ")}).`;
 
   throw new Error(
-    `No rive-render binary found for ${platformKey}. ` +
-      `Set RIVE_RENDER_BINARY env var or install @breakawaydata/rive-render-${platformKey}.`
+    `No rive-render binary found for ${platformKey}. ${supportedMsg} ` +
+      `You can set RIVE_RENDER_BINARY env var to provide a custom binary path.`
   );
 }

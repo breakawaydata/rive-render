@@ -21,6 +21,8 @@ jobs:
 
       - run: npm ci
         working-directory: ts
+        env:
+          RIVE_RENDER_SKIP_POSTINSTALL: "1"
 
       - run: npm run lint
         working-directory: ts
@@ -93,6 +95,8 @@ jobs:
 
       - name: Install and build TypeScript
         working-directory: ts
+        env:
+          RIVE_RENDER_SKIP_POSTINSTALL: "1"
         run: |
           npm ci
           npm run build

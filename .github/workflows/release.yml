@@ -109,6 +109,8 @@ jobs:
 
       - name: Install and build TypeScript
         working-directory: ts
+        env:
+          RIVE_RENDER_SKIP_POSTINSTALL: "1"
         run: |
           npm ci
           npm run build
@@ -145,69 +147,24 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp versions
+      - name: Stamp version
         run: bash scripts/version.sh "${{ steps.version.outputs.version }}"
 
       # Download all platform binaries
-      - name: Download darwin-arm64 binary
+      - name: Download all binaries
         uses: actions/download-artifact@v4
         with:
-          name: rive-render-darwin-arm64
-          path: npm/darwin-arm64/bin/
+          path: artifacts/
 
-      - name: Download darwin-x64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: rive-render-darwin-x64
-          path: npm/darwin-x64/bin/
-
-      - name: Download linux-x64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: rive-render-linux-x64
-          path: npm/linux-x64/bin/
-
-      - name: Download linux-arm64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: rive-render-linux-arm64
-          path: npm/linux-arm64/bin/
-
-      - name: Rename binaries and set permissions
-        run: |
-          for dir in npm/*/bin/; do
-            mv "$dir/rive_render" "$dir/rive-render"
-            chmod +x "$dir/rive-render"
-          done
-
-      # Publish platform packages first
-      - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for dir in npm/*/; do
-            echo "Publishing $(basename "$dir")..."
-            npm publish "$dir"
-          done
-
-      # Build and publish main TypeScript package
-      - name: Publish main package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        working-directory: ts
-        run: |
-          npm ci
-          npm publish
-
-      # Create GitHub Release with binaries
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
-          for dir in npm/*/; do
-            platform_arch=$(basename "$dir")
-            cp "$dir/bin/rive-render" "release-assets/rive-render-${platform_arch}"
+          for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            cp "artifacts/rive-render-${platform}/rive_render" "release-assets/rive-render-${platform}"
+            chmod +x "release-assets/rive-render-${platform}"
           done
 
+      # Create GitHub Release FIRST — postinstall downloads from here
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -216,3 +173,13 @@ jobs:
             --title "Release ${{ steps.version.outputs.tag }}" \
             --generate-notes \
             release-assets/*
+
+      # Publish main TypeScript package
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RIVE_RENDER_SKIP_POSTINSTALL: "1"
+        working-directory: ts
+        run: |
+          npm ci
+          npm publish
