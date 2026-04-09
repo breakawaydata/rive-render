@@ -343,18 +343,11 @@ The native build output is cached by source hash, so PRs that only change TypeSc
 
 ### Releasing
 
-Releases are triggered by pushing a version tag:
+Releases are triggered by pushing a version tag. The CI workflow automatically stamps all package versions from the tag — no manual version bumps needed:
 
 ```bash
-# 1. Update version across all packages
-bash scripts/version.sh 0.2.0
-
-# 2. Commit the version bump
-git add -A && git commit -m "chore: release v0.2.0"
-
-# 3. Tag and push
 git tag v0.2.0
-git push origin main --tags
+git push origin v0.2.0
 ```
 
 This triggers the release workflow which:
