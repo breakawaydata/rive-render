@@ -115,18 +115,27 @@ async function main() {
     fs.writeFileSync(versionFile, version);
     console.log("rive-render: Binary installed successfully.");
 
-    // Download MoltenVK for macOS (Vulkan-on-Metal, needed by the binary)
+    // Download MoltenVK for macOS only if not already available on the system.
+    // The binary's preloadMoltenVK() searches: bin dir, /opt/homebrew/lib, /usr/local/lib.
     if (os.platform() === "darwin") {
-      const mvkUrl = `https://github.com/breakawaydata/rive-render/releases/download/v${version}/libMoltenVK.dylib`;
       const mvkPath = path.join(binDir, "libMoltenVK.dylib");
-      try {
-        await downloadFile(mvkUrl, mvkPath);
-        console.log("rive-render: MoltenVK installed successfully.");
-      } catch (mvkErr) {
-        console.warn(
-          `rive-render: Failed to download MoltenVK (${mvkErr.message}). ` +
-            `Vulkan rendering may fail unless MoltenVK is installed via Homebrew.`
-        );
+      const systemPaths = [
+        mvkPath,
+        "/opt/homebrew/lib/libMoltenVK.dylib",
+        "/usr/local/lib/libMoltenVK.dylib",
+      ];
+      const found = systemPaths.some((p) => fs.existsSync(p));
+      if (!found) {
+        const mvkUrl = `https://github.com/breakawaydata/rive-render/releases/download/v${version}/libMoltenVK.dylib`;
+        try {
+          await downloadFile(mvkUrl, mvkPath);
+          console.log("rive-render: MoltenVK installed successfully.");
+        } catch (mvkErr) {
+          console.warn(
+            `rive-render: Failed to download MoltenVK (${mvkErr.message}). ` +
+              `Vulkan rendering may fail unless MoltenVK is installed via Homebrew.`
+          );
+        }
       }
     }
   } catch (err) {
