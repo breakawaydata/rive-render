@@ -53,6 +53,7 @@ jobs:
             clang \
             llvm \
             python3 \
+            zlib1g-dev \
             libvulkan-dev \
             vulkan-validationlayers \
             glslang-tools

@@ -80,7 +80,10 @@ do
 
     filter('system:linux')
     do
-        links({ 'pthread', 'dl' })
+        -- GNU ld is strict about link order; linkgroups wraps libs in
+        -- --start-group / --end-group to resolve circular deps.
+        linkgroups('On')
+        links({ 'pthread', 'dl', 'z' })
     end
 
     filter({ 'toolset:not msc' })
