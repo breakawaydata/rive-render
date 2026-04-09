@@ -24,8 +24,8 @@ if [ ! -x "$PREMAKE5" ]; then
         PREMAKE_SRC="$PROJECT_ROOT/deps/premake-src"
         curl -L "https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-src.zip" -o /tmp/premake-src.zip
         unzip -q /tmp/premake-src.zip -d "$PREMAKE_SRC"
-        make -C "$PREMAKE_SRC" -f Bootstrap.mak linux
-        cp "$PREMAKE_SRC/bin/release/premake5" "$PREMAKE5"
+        make -C "$PREMAKE_SRC/premake-5.0.0-beta6-src" -f Bootstrap.mak linux
+        cp "$PREMAKE_SRC/premake-5.0.0-beta6-src/bin/release/premake5" "$PREMAKE5"
         chmod +x "$PREMAKE5"
         rm -rf "$PREMAKE_SRC" /tmp/premake-src.zip
     else
