@@ -85,9 +85,6 @@ if [ -f "$BINARY" ]; then
     echo "Binary: $BINARY"
     ls -lh "$BINARY"
     echo ""
-    echo "To run, set the MoltenVK library path (macOS):"
-    echo "  export DYLD_LIBRARY_PATH=$RIVE_RUNTIME/renderer/dependencies/MoltenVK/Package/Release/MoltenVK/dylib/macOS"
-    echo ""
     echo "Example usage:"
     echo "  echo '{\"rivFile\":\"file.riv\",\"width\":800,\"height\":600,\"screenshot\":{\"path\":\"out.png\"}}' | $BINARY"
 else

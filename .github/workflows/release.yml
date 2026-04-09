@@ -75,6 +75,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Upload MoltenVK (macOS only)
+        if: matrix.platform == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libMoltenVK-${{ matrix.artifact }}
+          path: deps/rive-runtime/renderer/dependencies/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+          if-no-files-found: error
+          retention-days: 1
+
   # ── Stage 2: Test (Linux x64) ─────────────────────────────────
   test:
     needs: build-native
@@ -163,6 +172,10 @@ jobs:
             cp "artifacts/rive-render-${platform}/rive_render" "release-assets/rive-render-${platform}"
             chmod +x "release-assets/rive-render-${platform}"
           done
+          # Bundle MoltenVK for macOS platforms (same dylib works for both arm64 and x64)
+          if [ -d "artifacts/libMoltenVK-rive-render-darwin-arm64" ]; then
+            cp "artifacts/libMoltenVK-rive-render-darwin-arm64/libMoltenVK.dylib" "release-assets/libMoltenVK.dylib"
+          fi
 
       # Create GitHub Release FIRST — postinstall downloads from here
       - name: Create GitHub Release
