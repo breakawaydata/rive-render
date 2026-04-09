@@ -19,12 +19,25 @@
 #include <string>
 #include <vector>
 
+#ifdef __APPLE__
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#endif
+
 #include "rive/animation/linear_animation_instance.hpp"
+#include "rive/animation/state_machine_input_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
 #include "rive/artboard.hpp"
 #include "rive/file.hpp"
 #include "rive/renderer/render_context.hpp"
 #include "rive/renderer/rive_renderer.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_boolean_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_color_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_enum_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_number_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_string_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
 
 #ifdef RIVE_VULKAN
 #include "headless_renderer.hpp"
@@ -37,6 +50,40 @@
 #include "output_video.hpp"
 #ifdef RIVE_VULKAN
 #include "queue_renderer.hpp"
+#endif
+
+#ifdef __APPLE__
+static void preloadMoltenVK()
+{
+    // Try to load MoltenVK from the binary's own directory first
+    char exePath[1024];
+    uint32_t size = sizeof(exePath);
+    if (_NSGetExecutablePath(exePath, &size) == 0)
+    {
+        std::string dir(exePath);
+        dir = dir.substr(0, dir.rfind('/'));
+        std::string mvkPath = dir + "/libMoltenVK.dylib";
+        fprintf(stderr, "[rive-render] Trying MoltenVK at: %s\n", mvkPath.c_str());
+        void* h = dlopen(mvkPath.c_str(), RTLD_GLOBAL | RTLD_LAZY);
+        if (h) { fprintf(stderr, "[rive-render] Loaded MoltenVK from binary dir\n"); return; }
+        fprintf(stderr, "[rive-render] dlopen failed: %s\n", dlerror());
+    }
+
+    // Try common Homebrew and system locations
+    const char* paths[] = {
+        "/opt/homebrew/lib/libMoltenVK.dylib", // ARM macOS Homebrew
+        "/usr/local/lib/libMoltenVK.dylib",    // Intel macOS Homebrew
+        nullptr,
+    };
+    for (const char** p = paths; *p; ++p)
+    {
+        fprintf(stderr, "[rive-render] Trying MoltenVK at: %s\n", *p);
+        void* h = dlopen(*p, RTLD_GLOBAL | RTLD_LAZY);
+        if (h) { fprintf(stderr, "[rive-render] Loaded MoltenVK from: %s\n", *p); return; }
+        fprintf(stderr, "[rive-render] dlopen failed: %s\n", dlerror());
+    }
+    fprintf(stderr, "[rive-render] WARNING: Could not preload MoltenVK\n");
+}
 #endif
 
 static std::vector<uint8_t> readFileBytes(const std::string& path)
@@ -75,6 +122,10 @@ static void outputJson(bool success, const std::string& outputPath = "", int fra
 
 int main(int argc, char* argv[])
 {
+#ifdef __APPLE__
+    preloadMoltenVK();
+#endif
+
     try
     {
         // Read JSON config from stdin (or --config file)
@@ -197,6 +248,103 @@ int main(int argc, char* argv[])
         if (!stateMachine && artboard->animationCount() > 0)
         {
             linearAnimation = artboard->animationAt(0);
+        }
+
+        // Apply viewModelData (if provided)
+        if (!config.viewModelData.properties.empty())
+        {
+            // Get or create a ViewModel instance from the file
+            rive::rcp<rive::ViewModelInstance> vmInstance;
+
+            if (!config.viewModelData.instance.empty())
+            {
+                // Create by viewModel name + instance name
+                if (!config.viewModelData.viewModel.empty())
+                {
+                    vmInstance = file->createViewModelInstance(
+                        config.viewModelData.viewModel, config.viewModelData.instance);
+                }
+                else
+                {
+                    vmInstance =
+                        file->createViewModelInstance(config.viewModelData.instance);
+                }
+            }
+            else
+            {
+                // Create default instance for the artboard
+                vmInstance = file->createDefaultViewModelInstance(artboard.get());
+            }
+
+            if (vmInstance)
+            {
+                // Use ViewModelRuntime API to set properties
+                auto vmRuntime =
+                    rive::rcp<rive::ViewModelInstanceRuntime>(
+                        new rive::ViewModelInstanceRuntime(vmInstance));
+
+                for (auto& [path, prop] : config.viewModelData.properties)
+                {
+                    if (prop.type == "string")
+                    {
+                        auto* p = vmRuntime->propertyString(path);
+                        if (p)
+                            p->value(prop.stringValue);
+                    }
+                    else if (prop.type == "number")
+                    {
+                        auto* p = vmRuntime->propertyNumber(path);
+                        if (p)
+                            p->value(prop.numberValue);
+                    }
+                    else if (prop.type == "boolean")
+                    {
+                        auto* p = vmRuntime->propertyBoolean(path);
+                        if (p)
+                            p->value(prop.boolValue);
+                    }
+                    else if (prop.type == "color")
+                    {
+                        auto* p = vmRuntime->propertyColor(path);
+                        if (p)
+                            p->value(static_cast<int>(prop.colorValue));
+                    }
+                    else if (prop.type == "enum")
+                    {
+                        auto* p = vmRuntime->propertyEnum(path);
+                        if (p)
+                            p->value(prop.stringValue);
+                    }
+                }
+
+                // Bind the ViewModel instance to the artboard
+                if (stateMachine)
+                {
+                    stateMachine->bindViewModelInstance(vmInstance);
+                }
+                artboard->bindViewModelInstance(vmInstance);
+            }
+        }
+
+        // Apply stateMachineInputs (if provided and state machine exists)
+        if (stateMachine)
+        {
+            for (auto& [name, value] : config.stateMachineNumberInputs)
+            {
+                auto* input = stateMachine->getNumber(name);
+                if (input)
+                {
+                    input->value(value);
+                }
+            }
+            for (auto& [name, value] : config.stateMachineBoolInputs)
+            {
+                auto* input = stateMachine->getBool(name);
+                if (input)
+                {
+                    input->value(value);
+                }
+            }
         }
 
         // Helper: advance one time step using whichever animation is active

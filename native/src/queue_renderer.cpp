@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include "rive/animation/state_machine_input_instance.hpp"
+#include "rive/animation/state_machine_instance.hpp"
 #include "rive/command_queue.hpp"
 #include "rive/command_server.hpp"
 
@@ -171,8 +173,37 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     queue->setViewModelInstanceBool(vmHandle, path, prop.boolValue);
                 else if (prop.type == "color")
                     queue->setViewModelInstanceColor(vmHandle, path, prop.colorValue);
+                else if (prop.type == "enum")
+                    queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
             }
         }
+
+        // 8b. Apply stateMachineInputs via draw callback on the server thread.
+        // The CommandQueue API doesn't expose direct state machine input setters,
+        // so we apply them in the first draw callback where we have access to
+        // the StateMachineInstance.
+        bool inputsApplied = false;
+        auto applyInputs = [&](CommandServer* srv)
+        {
+            if (inputsApplied)
+                return;
+            inputsApplied = true;
+            auto* sm = srv->getStateMachineInstance(smHandle);
+            if (!sm)
+                return;
+            for (auto& [name, value] : config.stateMachineNumberInputs)
+            {
+                auto* input = sm->getNumber(name);
+                if (input)
+                    input->value(value);
+            }
+            for (auto& [name, value] : config.stateMachineBoolInputs)
+            {
+                auto* input = sm->getBool(name);
+                if (input)
+                    input->value(value);
+            }
+        };
 
         // 9. Determine frame parameters
         float fps = config.hasOutput() ? config.output.fps : 60.0f;
@@ -216,6 +247,9 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             queue->draw(drawKey, CommandServerDrawCallback(
                                      [&](DrawKey, CommandServer* srv)
                                      {
+                                         // Apply state machine inputs on the first draw
+                                         applyInputs(srv);
+
                                          // Get artboard from server (owns the instance)
                                          auto* artboard = srv->getArtboardInstance(abHandle);
                                          if (!artboard)
