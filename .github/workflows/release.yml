@@ -21,14 +21,15 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             platform: darwin
             arch: arm64
             artifact: rive-render-darwin-arm64
-          - os: macos-13
+          - os: macos-15
             platform: darwin
             arch: x64
             artifact: rive-render-darwin-x64
+            target_arch: x64
           - os: ubuntu-24.04
             platform: linux
             arch: x64
@@ -63,7 +64,7 @@ jobs:
         run: brew install glslang
 
       - name: Build native binary
-        run: bash scripts/build-native.sh release
+        run: bash scripts/build-native.sh release ${{ matrix.target_arch }}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

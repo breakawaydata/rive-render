@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RIVE_RUNTIME="$PROJECT_ROOT/deps/rive-runtime"
 BUILD_DIR="$PROJECT_ROOT/native"
 CONFIG="${1:-release}"
+TARGET_ARCH="${2:-}"
 OS="$(uname -s)"
 
 # --- Download premake5 if needed ---
@@ -43,6 +44,12 @@ fi
 # --- Build rive-render ---
 cd "$BUILD_DIR"
 
+PREMAKE_ARCH_FLAG=""
+if [ -n "$TARGET_ARCH" ]; then
+    PREMAKE_ARCH_FLAG="--arch=$TARGET_ARCH"
+    echo "==> Cross-compiling for architecture: $TARGET_ARCH"
+fi
+
 echo "==> Running premake5 (config=$CONFIG, with_vulkan, with-rtti, with-exceptions)..."
 "$PREMAKE5" \
     --scripts="$RIVE_RUNTIME/build" \
@@ -52,6 +59,7 @@ echo "==> Running premake5 (config=$CONFIG, with_vulkan, with-rtti, with-excepti
     --with_rive_layout \
     --config="$CONFIG" \
     --out="out/$CONFIG" \
+    $PREMAKE_ARCH_FLAG \
     gmake2
 
 echo "==> Building..."
