@@ -169,6 +169,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh release delete "${{ steps.version.outputs.tag }}" --yes 2>/dev/null || true
           gh release create "${{ steps.version.outputs.tag }}" \
             --title "Release ${{ steps.version.outputs.tag }}" \
             --generate-notes \
