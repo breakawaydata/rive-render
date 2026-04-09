@@ -157,7 +157,14 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         // 8. Bind view model data (if provided)
         if (!config.viewModelData.properties.empty())
         {
-            auto vmHandle = config.viewModelData.instance.empty()
+            // Use named ViewModel if specified, otherwise default
+            auto vmHandle = !config.viewModelData.viewModel.empty()
+                                ? (!config.viewModelData.instance.empty()
+                                       ? queue->instantiateViewModelInstanceNamed(
+                                             fileHandle, abHandle, config.viewModelData.instance)
+                                       : queue->instantiateBlankViewModelInstance(
+                                             fileHandle, abHandle))
+                            : config.viewModelData.instance.empty()
                                 ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
                                 : queue->instantiateViewModelInstanceNamed(
                                       fileHandle, abHandle, config.viewModelData.instance);
@@ -178,32 +185,46 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             }
         }
 
-        // 8b. Apply stateMachineInputs via draw callback on the server thread.
-        // The CommandQueue API doesn't expose direct state machine input setters,
-        // so we apply them in the first draw callback where we have access to
-        // the StateMachineInstance.
-        bool inputsApplied = false;
-        auto applyInputs = [&](CommandServer* srv)
+        // 8b. Apply stateMachineInputs before any advances.
+        // Use a draw callback to access the StateMachineInstance on the server thread,
+        // then wait for it to complete before proceeding to warmup/rendering.
+        if (!config.stateMachineNumberInputs.empty() || !config.stateMachineBoolInputs.empty())
         {
-            if (inputsApplied)
-                return;
-            inputsApplied = true;
-            auto* sm = srv->getStateMachineInstance(smHandle);
-            if (!sm)
-                return;
-            for (auto& [name, value] : config.stateMachineNumberInputs)
-            {
-                auto* input = sm->getNumber(name);
-                if (input)
-                    input->value(value);
-            }
-            for (auto& [name, value] : config.stateMachineBoolInputs)
-            {
-                auto* input = sm->getBool(name);
-                if (input)
-                    input->value(value);
-            }
-        };
+            std::mutex inputMtx;
+            std::condition_variable inputCv;
+            bool inputsDone = false;
+
+            auto inputDrawKey = queue->createDrawKey();
+            queue->draw(inputDrawKey, CommandServerDrawCallback(
+                                          [&](DrawKey, CommandServer* srv)
+                                          {
+                                              auto* sm = srv->getStateMachineInstance(smHandle);
+                                              if (sm)
+                                              {
+                                                  for (auto& [name, value] :
+                                                       config.stateMachineNumberInputs)
+                                                  {
+                                                      auto* input = sm->getNumber(name);
+                                                      if (input)
+                                                          input->value(value);
+                                                  }
+                                                  for (auto& [name, value] :
+                                                       config.stateMachineBoolInputs)
+                                                  {
+                                                      auto* input = sm->getBool(name);
+                                                      if (input)
+                                                          input->value(value);
+                                                  }
+                                              }
+                                              std::lock_guard<std::mutex> lock(inputMtx);
+                                              inputsDone = true;
+                                              inputCv.notify_one();
+                                          }));
+
+            // Wait for inputs to be applied before warmup
+            std::unique_lock<std::mutex> lock(inputMtx);
+            inputCv.wait(lock, [&] { return inputsDone; });
+        }
 
         // 9. Determine frame parameters
         float fps = config.hasOutput() ? config.output.fps : 60.0f;
@@ -223,10 +244,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         int totalFrames = config.hasOutput() ? static_cast<int>(fps * config.output.duration) : 1;
 
         // 10. Render frames via draw callback
-        // Following the Apple runtime pattern: the draw callback receives
-        // the CommandServer, gets the artboard + render context from it,
-        // then does all rendering (beginFrame, draw, flush) inside the
-        // callback on the server thread.
         std::vector<std::vector<uint8_t>> frames;
         frames.reserve(totalFrames);
 
@@ -247,8 +264,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             queue->draw(drawKey, CommandServerDrawCallback(
                                      [&](DrawKey, CommandServer* srv)
                                      {
-                                         // Apply state machine inputs on the first draw
-                                         applyInputs(srv);
 
                                          // Get artboard from server (owns the instance)
                                          auto* artboard = srv->getArtboardInstance(abHandle);
