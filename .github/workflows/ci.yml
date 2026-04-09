@@ -101,11 +101,16 @@ jobs:
         working-directory: ts
         run: npm test
 
-      - name: Upload snapshot diffs on failure
+      - name: Update snapshots on failure
+        if: failure()
+        working-directory: ts
+        run: npm run test:update
+
+      - name: Upload updated snapshots on failure
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: snapshot-diffs
+          name: updated-snapshots
           path: |
-            ts/src/test/__image_snapshots__/__diff_output__/
-            ts/src/test/__file_snapshots__/*.actual.*
+            ts/src/test/__image_snapshots__/
+            ts/src/test/__file_snapshots__/
