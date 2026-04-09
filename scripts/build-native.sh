@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RIVE_RUNTIME="$PROJECT_ROOT/deps/rive-runtime"
 BUILD_DIR="$PROJECT_ROOT/native"
 CONFIG="${1:-release}"
+OS="$(uname -s)"
 
 # --- Download premake5 if needed ---
 PREMAKE5="$PROJECT_ROOT/deps/bin/premake5"
@@ -13,7 +14,6 @@ if [ ! -x "$PREMAKE5" ]; then
     echo "==> Downloading premake5..."
     mkdir -p "$PROJECT_ROOT/deps/bin"
     ARCH="$(uname -m)"
-    OS="$(uname -s)"
     if [ "$OS" = "Darwin" ]; then
         PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-macosx.tar.gz"
     elif [ "$OS" = "Linux" ]; then

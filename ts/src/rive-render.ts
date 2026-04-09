@@ -4,8 +4,6 @@ import { resolveFFmpeg } from "./ffmpeg-resolver.js";
 import type {
   RiveRenderConfig,
   RenderResult,
-  ScreenshotOptions,
-  OutputConfig,
   ViewModelDataConfig,
   AssetConfig,
 } from "./types.js";

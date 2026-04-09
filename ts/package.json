@@ -1,13 +1,19 @@
 {
-  "name": "@breakaway/rive-render",
+  "name": "@breakawaydata/rive-render",
   "version": "0.1.0",
   "description": "Headless Rive animation renderer - generate GIF/video/screenshots from .riv files",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
   "scripts": {
     "build": "tsc",
+    "lint": "eslint .",
     "test": "jest --forceExit",
-    "test:update": "jest --forceExit -u"
+    "test:update": "jest --forceExit -u",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "rive",
@@ -18,13 +24,29 @@
     "screenshot"
   ],
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/breakawaydata/rive-render.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "optionalDependencies": {
+    "@breakawaydata/rive-render-darwin-arm64": "0.1.0",
+    "@breakawaydata/rive-render-darwin-x64": "0.1.0",
+    "@breakawaydata/rive-render-linux-x64": "0.1.0",
+    "@breakawaydata/rive-render-linux-arm64": "0.1.0"
+  },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@types/jest": "^30.0.0",
     "@types/jest-image-snapshot": "^6.4.1",
     "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
     "jest": "^30.3.0",
     "jest-image-snapshot": "^6.5.2",
     "ts-jest": "^29.4.9",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

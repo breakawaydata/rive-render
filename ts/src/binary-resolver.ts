@@ -11,10 +11,10 @@ export function resolveBinary(): string {
   // 2. Check platform-specific optional dependency package
   const platformKey = `${platform()}-${arch()}`;
   const packageMap: Record<string, string> = {
-    "darwin-arm64": "@breakaway/rive-render-darwin-arm64",
-    "darwin-x64": "@breakaway/rive-render-darwin-x64",
-    "linux-x64": "@breakaway/rive-render-linux-x64",
-    "linux-arm64": "@breakaway/rive-render-linux-arm64",
+    "darwin-arm64": "@breakawaydata/rive-render-darwin-arm64",
+    "darwin-x64": "@breakawaydata/rive-render-darwin-x64",
+    "linux-x64": "@breakawaydata/rive-render-linux-x64",
+    "linux-arm64": "@breakawaydata/rive-render-linux-arm64",
   };
 
   const pkg = packageMap[platformKey];
@@ -37,6 +37,6 @@ export function resolveBinary(): string {
 
   throw new Error(
     `No rive-render binary found for ${platformKey}. ` +
-      `Set RIVE_RENDER_BINARY env var or install @breakaway/rive-render-${platformKey}.`
+      `Set RIVE_RENDER_BINARY env var or install @breakawaydata/rive-render-${platformKey}.`
   );
 }

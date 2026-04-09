@@ -4,12 +4,8 @@
 #include <sstream>
 #include <stdexcept>
 
-void writeVideo(const std::string& outputPath,
-                int width,
-                int height,
-                float fps,
-                const std::vector<std::vector<uint8_t>>& frames,
-                const std::string& format,
+void writeVideo(const std::string& outputPath, int width, int height, float fps,
+                const std::vector<std::vector<uint8_t>>& frames, const std::string& format,
                 const std::string& ffmpegPath)
 {
     if (frames.empty())
@@ -18,13 +14,12 @@ void writeVideo(const std::string& outputPath,
     }
 
     std::ostringstream cmd;
-    cmd << ffmpegPath
-        << " -y"                              // overwrite output
-        << " -f rawvideo"                     // input format
-        << " -pix_fmt rgba"                   // pixel format
-        << " -s " << width << "x" << height   // frame size
-        << " -r " << fps                      // frame rate
-        << " -i pipe:0";                      // read from stdin
+    cmd << ffmpegPath << " -y"              // overwrite output
+        << " -f rawvideo"                   // input format
+        << " -pix_fmt rgba"                 // pixel format
+        << " -s " << width << "x" << height // frame size
+        << " -r " << fps                    // frame rate
+        << " -i pipe:0";                    // read from stdin
 
     if (format == "mp4")
     {
@@ -74,7 +69,6 @@ void writeVideo(const std::string& outputPath,
     int status = pclose(pipe);
     if (status != 0)
     {
-        throw std::runtime_error(
-            "ffmpeg exited with error. Is ffmpeg installed and in PATH?");
+        throw std::runtime_error("ffmpeg exited with error. Is ffmpeg installed and in PATH?");
     }
 }

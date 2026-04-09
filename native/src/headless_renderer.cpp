@@ -8,8 +8,7 @@
 using namespace rive;
 using namespace rive::gpu;
 
-HeadlessRenderer::HeadlessRenderer(int width, int height)
-    : m_width(width), m_height(height)
+HeadlessRenderer::HeadlessRenderer(int width, int height) : m_width(width), m_height(height)
 {
     using namespace rive_vkb;
 
@@ -24,40 +23,30 @@ HeadlessRenderer::HeadlessRenderer(int width, int height)
     }
 
     // 2. Create device in headless mode
-    m_device = VulkanDevice::Create(
-        *m_instance,
-        VulkanDevice::Options{
-            .headless = true,
-        });
+    m_device = VulkanDevice::Create(*m_instance, VulkanDevice::Options{
+                                                     .headless = true,
+                                                 });
     if (!m_device)
     {
-        throw std::runtime_error(
-            "Failed to create Vulkan device. Is a Vulkan driver "
-            "(or SwiftShader/MoltenVK) available?");
+        throw std::runtime_error("Failed to create Vulkan device. Is a Vulkan driver "
+                                 "(or SwiftShader/MoltenVK) available?");
     }
 
     // 3. Create PLS render context
     auto vkImpl = RenderContextVulkanImpl::MakeContext(
-        m_instance->vkInstance(),
-        m_device->vkPhysicalDevice(),
-        m_device->vkDevice(),
-        m_device->vulkanFeatures(),
-        m_instance->getVkGetInstanceProcAddrPtr(),
-        {});
+        m_instance->vkInstance(), m_device->vkPhysicalDevice(), m_device->vkDevice(),
+        m_device->vulkanFeatures(), m_instance->getVkGetInstanceProcAddrPtr(), {});
     if (!vkImpl)
     {
         throw std::runtime_error("Failed to create Vulkan render context");
     }
 
     // Get the VulkanContext before moving
-    auto* vkCtx =
-        vkImpl->static_impl_cast<RenderContextVulkanImpl>()->vulkanContext();
+    auto* vkCtx = vkImpl->static_impl_cast<RenderContextVulkanImpl>()->vulkanContext();
 
     // 4. Create headless frame synchronizer (manages offscreen image + readback)
     m_frameSynchronizer = VulkanHeadlessFrameSynchronizer::Create(
-        *m_instance,
-        *m_device,
-        ref_rcp(vkCtx),
+        *m_instance, *m_device, ref_rcp(vkCtx),
         VulkanHeadlessFrameSynchronizer::Options{
             .width = static_cast<uint32_t>(width),
             .height = static_cast<uint32_t>(height),
@@ -68,17 +57,12 @@ HeadlessRenderer::HeadlessRenderer(int width, int height)
         });
     if (!m_frameSynchronizer)
     {
-        throw std::runtime_error(
-            "Failed to create headless frame synchronizer");
+        throw std::runtime_error("Failed to create headless frame synchronizer");
     }
 
     // 5. Create render target
-    m_renderTarget =
-        vkImpl->static_impl_cast<RenderContextVulkanImpl>()->makeRenderTarget(
-            width,
-            height,
-            m_frameSynchronizer->imageFormat(),
-            m_frameSynchronizer->imageUsageFlags());
+    m_renderTarget = vkImpl->static_impl_cast<RenderContextVulkanImpl>()->makeRenderTarget(
+        width, height, m_frameSynchronizer->imageFormat(), m_frameSynchronizer->imageUsageFlags());
     if (!m_renderTarget)
     {
         throw std::runtime_error("Failed to create render target");
@@ -89,9 +73,8 @@ HeadlessRenderer::HeadlessRenderer(int width, int height)
 
 HeadlessRenderer::~HeadlessRenderer() = default;
 
-std::vector<uint8_t> HeadlessRenderer::renderFrame(
-    ArtboardInstance* artboard,
-    StateMachineInstance* stateMachine)
+std::vector<uint8_t> HeadlessRenderer::renderFrame(ArtboardInstance* artboard,
+                                                   StateMachineInstance* stateMachine)
 {
     // Begin frame on the synchronizer (manages command buffers)
     VkResult result = m_frameSynchronizer->beginFrame();
@@ -116,9 +99,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(
     // Create renderer and draw artboard
     RiveRenderer renderer(m_renderContext.get());
     renderer.save();
-    renderer.align(Fit::contain,
-                   Alignment::center,
-                   AABB(0, 0, m_width, m_height),
+    renderer.align(Fit::contain, Alignment::center, AABB(0, 0, m_width, m_height),
                    artboard->bounds());
     artboard->draw(&renderer);
     renderer.restore();
@@ -133,9 +114,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(
 
     // Queue pixel readback (GPU → CPU)
     auto lastAccess = m_renderTarget->targetLastAccess();
-    m_frameSynchronizer->queueImageCopy(
-        &lastAccess,
-        IAABB::MakeWH(m_width, m_height));
+    m_frameSynchronizer->queueImageCopy(&lastAccess, IAABB::MakeWH(m_width, m_height));
 
     // End frame (submits command buffer)
     result = m_frameSynchronizer->endFrame(lastAccess);
@@ -160,8 +139,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(
         // Swap rows in-place
         for (size_t x = 0; x < rowBytes; x++)
         {
-            std::swap(pixels[y * rowBytes + x],
-                      pixels[opposite * rowBytes + x]);
+            std::swap(pixels[y * rowBytes + x], pixels[opposite * rowBytes + x]);
         }
     }
 

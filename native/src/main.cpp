@@ -19,12 +19,12 @@
 #include <string>
 #include <vector>
 
-#include "rive/file.hpp"
-#include "rive/artboard.hpp"
 #include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
-#include "rive/renderer/rive_renderer.hpp"
+#include "rive/artboard.hpp"
+#include "rive/file.hpp"
 #include "rive/renderer/render_context.hpp"
+#include "rive/renderer/rive_renderer.hpp"
 
 #ifdef RIVE_VULKAN
 #include "headless_renderer.hpp"
@@ -60,9 +60,7 @@ static std::string readStdin()
     return ss.str();
 }
 
-static void outputJson(bool success,
-                       const std::string& outputPath = "",
-                       int frameCount = 0,
+static void outputJson(bool success, const std::string& outputPath = "", int frameCount = 0,
                        const std::string& error = "")
 {
     std::cout << "{\"success\":" << (success ? "true" : "false");
@@ -114,10 +112,7 @@ int main(int argc, char* argv[])
             {
                 if (!result.frames.empty())
                 {
-                    writePng(config.screenshot.path,
-                             config.width,
-                             config.height,
-                             result.frames[0]);
+                    writePng(config.screenshot.path, config.width, config.height, result.frames[0]);
                 }
                 outputJson(true, config.screenshot.path, 1);
                 return 0;
@@ -127,37 +122,20 @@ int main(int argc, char* argv[])
             {
                 if (config.output.format == "png" && !result.frames.empty())
                 {
-                    writePng(config.output.path,
-                             config.width,
-                             config.height,
-                             result.frames[0]);
+                    writePng(config.output.path, config.width, config.height, result.frames[0]);
                     outputJson(true, config.output.path, 1);
                 }
                 else if (config.output.format == "gif")
                 {
-                    writeGif(config.output.path,
-                             config.width,
-                             config.height,
-                             config.output.fps,
-                             result.frames,
-                             config.ffmpegPath);
-                    outputJson(true,
-                               config.output.path,
-                               static_cast<int>(result.frames.size()));
+                    writeGif(config.output.path, config.width, config.height, config.output.fps,
+                             result.frames, config.ffmpegPath);
+                    outputJson(true, config.output.path, static_cast<int>(result.frames.size()));
                 }
-                else if (config.output.format == "mp4" ||
-                         config.output.format == "webm")
+                else if (config.output.format == "mp4" || config.output.format == "webm")
                 {
-                    writeVideo(config.output.path,
-                               config.width,
-                               config.height,
-                               config.output.fps,
-                               result.frames,
-                               config.output.format,
-                               config.ffmpegPath);
-                    outputJson(true,
-                               config.output.path,
-                               static_cast<int>(result.frames.size()));
+                    writeVideo(config.output.path, config.width, config.height, config.output.fps,
+                               result.frames, config.output.format, config.ffmpegPath);
+                    outputJson(true, config.output.path, static_cast<int>(result.frames.size()));
                 }
                 return 0;
             }
@@ -167,8 +145,7 @@ int main(int argc, char* argv[])
         HeadlessRenderer headless(config.width, config.height);
         auto* factory = headless.factory();
 #else
-        std::cerr << "ERROR: Built without Vulkan support. Cannot render."
-                  << std::endl;
+        std::cerr << "ERROR: Built without Vulkan support. Cannot render." << std::endl;
         outputJson(false, "", 0, "No Vulkan support");
         return 1;
 #endif
@@ -180,11 +157,8 @@ int main(int argc, char* argv[])
 
         // Import .riv file
         rive::ImportResult importResult;
-        auto file = rive::File::import(
-            rive::Span<const uint8_t>(rivBytes.data(), rivBytes.size()),
-            factory,
-            &importResult,
-            std::move(assetLoader));
+        auto file = rive::File::import(rive::Span<const uint8_t>(rivBytes.data(), rivBytes.size()),
+                                       factory, &importResult, std::move(assetLoader));
         if (!file)
         {
             outputJson(false, "", 0, "Failed to import .riv file");
@@ -226,7 +200,8 @@ int main(int argc, char* argv[])
         }
 
         // Helper: advance one time step using whichever animation is active
-        auto advanceScene = [&](float step) {
+        auto advanceScene = [&](float step)
+        {
             if (stateMachine)
             {
                 stateMachine->advanceAndApply(step);
@@ -252,12 +227,8 @@ int main(int argc, char* argv[])
             }
 
 #ifdef RIVE_VULKAN
-            auto pixels =
-                headless.renderFrame(artboard.get(), stateMachine.get());
-            writePng(config.screenshot.path,
-                     config.width,
-                     config.height,
-                     pixels);
+            auto pixels = headless.renderFrame(artboard.get(), stateMachine.get());
+            writePng(config.screenshot.path, config.width, config.height, pixels);
 #endif
             outputJson(true, config.screenshot.path, 1);
             return 0;
@@ -266,8 +237,7 @@ int main(int argc, char* argv[])
         // Animation mode (GIF/video)
         if (config.hasOutput())
         {
-            int totalFrames =
-                static_cast<int>(config.output.fps * config.output.duration);
+            int totalFrames = static_cast<int>(config.output.fps * config.output.duration);
             float dt = 1.0f / config.output.fps;
             std::vector<std::vector<uint8_t>> frames;
             frames.reserve(totalFrames);
@@ -277,8 +247,7 @@ int main(int argc, char* argv[])
                 advanceScene(dt);
 
 #ifdef RIVE_VULKAN
-                auto pixels =
-                    headless.renderFrame(artboard.get(), stateMachine.get());
+                auto pixels = headless.renderFrame(artboard.get(), stateMachine.get());
                 frames.push_back(std::move(pixels));
 #endif
             }
@@ -287,55 +256,32 @@ int main(int argc, char* argv[])
             {
                 if (!frames.empty())
                 {
-                    writePng(config.output.path,
-                             config.width,
-                             config.height,
-                             frames[0]);
+                    writePng(config.output.path, config.width, config.height, frames[0]);
                 }
                 outputJson(true, config.output.path, 1);
             }
             else if (config.output.format == "gif")
             {
-                writeGif(config.output.path,
-                         config.width,
-                         config.height,
-                         config.output.fps,
-                         frames,
+                writeGif(config.output.path, config.width, config.height, config.output.fps, frames,
                          config.ffmpegPath);
-                outputJson(true,
-                           config.output.path,
-                           static_cast<int>(frames.size()));
+                outputJson(true, config.output.path, static_cast<int>(frames.size()));
             }
-            else if (config.output.format == "mp4" ||
-                     config.output.format == "webm")
+            else if (config.output.format == "mp4" || config.output.format == "webm")
             {
-                writeVideo(config.output.path,
-                           config.width,
-                           config.height,
-                           config.output.fps,
-                           frames,
-                           config.output.format,
-                           config.ffmpegPath);
-                outputJson(true,
-                           config.output.path,
-                           static_cast<int>(frames.size()));
+                writeVideo(config.output.path, config.width, config.height, config.output.fps,
+                           frames, config.output.format, config.ffmpegPath);
+                outputJson(true, config.output.path, static_cast<int>(frames.size()));
             }
             else
             {
-                outputJson(false,
-                           "",
-                           0,
-                           "Unknown output format: " + config.output.format);
+                outputJson(false, "", 0, "Unknown output format: " + config.output.format);
                 return 1;
             }
 
             return 0;
         }
 
-        outputJson(false,
-                    "",
-                    0,
-                    "No screenshot or output config provided");
+        outputJson(false, "", 0, "No screenshot or output config provided");
         return 1;
     }
     catch (const std::exception& e)

@@ -20,5 +20,4 @@ struct QueueRenderResult
     int height;
 };
 
-QueueRenderResult renderWithQueue(const Config& config,
-                                  const std::vector<uint8_t>& rivBytes);
+QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes);

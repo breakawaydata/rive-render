@@ -1,8 +1,8 @@
 #include "config.hpp"
 
+#include <map>
 #include <stdexcept>
 #include <string>
-#include <map>
 
 // Minimal JSON parser — just enough for our config format.
 // We avoid pulling in nlohmann/json to keep dependencies minimal.
@@ -14,8 +14,7 @@ namespace
 // Skip whitespace
 size_t skipWs(const std::string& s, size_t i)
 {
-    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' ||
-                            s[i] == '\r'))
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r'))
         ++i;
     return i;
 }
@@ -36,24 +35,24 @@ std::string parseString(const std::string& s, size_t& i)
                 break;
             switch (s[i])
             {
-                case '"':
-                    result += '"';
-                    break;
-                case '\\':
-                    result += '\\';
-                    break;
-                case '/':
-                    result += '/';
-                    break;
-                case 'n':
-                    result += '\n';
-                    break;
-                case 't':
-                    result += '\t';
-                    break;
-                default:
-                    result += s[i];
-                    break;
+            case '"':
+                result += '"';
+                break;
+            case '\\':
+                result += '\\';
+                break;
+            case '/':
+                result += '/';
+                break;
+            case 'n':
+                result += '\n';
+                break;
+            case 't':
+                result += '\t';
+                break;
+            default:
+                result += s[i];
+                break;
             }
         }
         else
@@ -73,8 +72,8 @@ float parseNumber(const std::string& s, size_t& i)
     size_t start = i;
     if (s[i] == '-')
         ++i;
-    while (i < s.size() && (std::isdigit(s[i]) || s[i] == '.' || s[i] == 'e' ||
-                            s[i] == 'E' || s[i] == '+' || s[i] == '-'))
+    while (i < s.size() && (std::isdigit(s[i]) || s[i] == '.' || s[i] == 'e' || s[i] == 'E' ||
+                            s[i] == '+' || s[i] == '-'))
         ++i;
     return std::stof(s.substr(start, i - start));
 }
@@ -114,7 +113,11 @@ void skipValue(const std::string& s, size_t& i)
             else if (s[i] == '}')
                 --depth;
             else if (s[i] == '"')
-                { size_t tmp = i; parseString(s, tmp); i = tmp - 1; } // parseString increments past quote
+            {
+                size_t tmp = i;
+                parseString(s, tmp);
+                i = tmp - 1;
+            } // parseString increments past quote
             ++i;
         }
     }
@@ -129,7 +132,11 @@ void skipValue(const std::string& s, size_t& i)
             else if (s[i] == ']')
                 --depth;
             else if (s[i] == '"')
-                { size_t tmp = i; parseString(s, tmp); i = tmp - 1; }
+            {
+                size_t tmp = i;
+                parseString(s, tmp);
+                i = tmp - 1;
+            }
             ++i;
         }
     }
@@ -148,8 +155,7 @@ void skipValue(const std::string& s, size_t& i)
 }
 
 // Parse a flat string->string map
-std::map<std::string, std::string> parseStringMap(const std::string& s,
-                                                   size_t& i)
+std::map<std::string, std::string> parseStringMap(const std::string& s, size_t& i)
 {
     std::map<std::string, std::string> result;
     i = skipWs(s, i);

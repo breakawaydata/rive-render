@@ -21,7 +21,7 @@ Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) with 
 ### TypeScript API
 
 ```typescript
-import { RiveRenderer } from "@breakaway/rive-render";
+import { RiveRenderer } from "@breakawaydata/rive-render";
 
 const cli = new RiveRenderer();
 
@@ -226,7 +226,7 @@ rive-render integrates with [jest-image-snapshot](https://github.com/americanexp
 
 ```typescript
 import { toMatchImageSnapshot } from "jest-image-snapshot";
-import { RiveRenderer } from "@breakaway/rive-render";
+import { RiveRenderer } from "@breakawaydata/rive-render";
 
 expect.extend({ toMatchImageSnapshot });
 
@@ -301,7 +301,7 @@ cd ts && npm run test:update
 
 ```bash
 # Clone with submodules
-git clone https://github.com/breakaway/rive-render.git
+git clone https://github.com/breakawaydata/rive-render.git
 cd rive-render
 
 # Clone rive-runtime
@@ -329,10 +329,70 @@ npm test
 npm run test:update
 ```
 
+## CI / CD
+
+### Pull Request Checks
+
+Every PR runs three parallel jobs on Ubuntu:
+
+- **Lint TypeScript** — ESLint with typescript-eslint
+- **Lint C++** — clang-format 18.1.8 check on `native/src/`
+- **Build & Test** — Build the native binary, compile TypeScript, run Jest tests
+
+The native build output is cached by source hash, so PRs that only change TypeScript skip the ~10 minute C++ compilation.
+
+### Releasing
+
+Releases are triggered by pushing a version tag. The CI workflow automatically stamps all package versions from the tag — no manual version bumps needed:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+This triggers the release workflow which:
+
+1. **Builds** native binaries on 4 platforms (darwin-arm64, darwin-x64, linux-x64, linux-arm64)
+2. **Tests** using the linux-x64 binary
+3. **Publishes** platform-specific npm packages (`@breakawaydata/rive-render-darwin-arm64`, etc.) and the main `@breakawaydata/rive-render` package to [GitHub Packages](https://npm.pkg.github.com)
+4. **Creates a GitHub Release** with the native binaries attached
+
+### Installing from GitHub Packages
+
+Configure npm to use GitHub Packages for the `@breakawaydata` scope:
+
+```bash
+echo "@breakawaydata:registry=https://npm.pkg.github.com" >> .npmrc
+npm install @breakawaydata/rive-render
+```
+
+The correct platform-specific binary is installed automatically via `optionalDependencies`.
+
+### Updating Test Snapshots
+
+GIF/MP4 file snapshots are platform-specific. To update after intentional rendering changes:
+
+```bash
+cd ts
+npm run test:update
+```
+
+If updating on macOS, the CI (Linux) snapshots will differ. Push your changes — CI will fail, generate updated snapshots as an artifact, which you can download and commit:
+
+```bash
+# After CI fails, download the updated snapshots from the failed run
+gh run download <RUN_ID> -n updated-snapshots -D /tmp/updated-snapshots
+cp /tmp/updated-snapshots/__file_snapshots__/*.gif ts/src/test/__file_snapshots__/
+cp /tmp/updated-snapshots/__file_snapshots__/*.mp4 ts/src/test/__file_snapshots__/
+cp /tmp/updated-snapshots/__image_snapshots__/*.png ts/src/test/__image_snapshots__/
+git add ts/src/test && git commit -m "fix: update snapshots for Linux CI"
+git push
+```
+
 ## Architecture
 
 ```
-TypeScript API (@breakaway/rive-render)
+TypeScript API (@breakawaydata/rive-render)
     |  spawns process, JSON config via stdin
     v
 C++ CLI binary (rive_render)
@@ -396,6 +456,17 @@ rive-render/
 |
 +-- scripts/
 |   +-- build-native.sh         Full build script
+|   +-- version.sh              Stamp version across all packages
+|
++-- npm/                        Platform-specific binary packages
+|   +-- darwin-arm64/
+|   +-- darwin-x64/
+|   +-- linux-x64/
+|   +-- linux-arm64/
+|
++-- .github/workflows/
+|   +-- ci.yml                  PR checks (lint, build, test)
+|   +-- release.yml             Release (build, publish, GitHub Release)
 |
 +-- deps/                       (gitignored)
     +-- rive-runtime/           Rive C++ runtime
