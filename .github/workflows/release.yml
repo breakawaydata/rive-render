@@ -29,11 +29,11 @@ jobs:
             platform: darwin
             arch: x64
             artifact: rive-render-darwin-x64
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             platform: linux
             arch: x64
             artifact: rive-render-linux-x64
-          - os: ubuntu-22.04-arm64
+          - os: ubuntu-24.04-arm64
             platform: linux
             arch: arm64
             artifact: rive-render-linux-arm64
