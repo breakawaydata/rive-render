@@ -58,6 +58,10 @@ jobs:
             vulkan-validationlayers \
             glslang-tools
 
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'darwin'
+        run: brew install glslang
+
       - name: Build native binary
         run: bash scripts/build-native.sh release
 
