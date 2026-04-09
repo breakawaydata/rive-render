@@ -57,7 +57,8 @@ jobs:
             zlib1g-dev \
             libvulkan-dev \
             vulkan-validationlayers \
-            glslang-tools
+            glslang-tools \
+            uuid-dev
 
       - name: Install dependencies (macOS)
         if: matrix.platform == 'darwin'
