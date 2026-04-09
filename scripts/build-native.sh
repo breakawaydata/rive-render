@@ -14,17 +14,30 @@ PREMAKE5="$PROJECT_ROOT/deps/bin/premake5"
 if [ ! -x "$PREMAKE5" ]; then
     echo "==> Downloading premake5..."
     mkdir -p "$PROJECT_ROOT/deps/bin"
-    ARCH="$(uname -m)"
+    HOST_ARCH="$(uname -m)"
     if [ "$OS" = "Darwin" ]; then
         PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-macosx.tar.gz"
-    elif [ "$OS" = "Linux" ]; then
+    elif [ "$OS" = "Linux" ] && [ "$HOST_ARCH" = "x86_64" ]; then
         PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-linux.tar.gz"
+    elif [ "$OS" = "Linux" ] && [ "$HOST_ARCH" = "aarch64" ]; then
+        echo "==> No prebuilt premake5 for Linux ARM64, building from source..."
+        PREMAKE_SRC="$PROJECT_ROOT/deps/premake-src"
+        curl -L "https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-src.zip" -o /tmp/premake-src.zip
+        unzip -q /tmp/premake-src.zip -d "$PREMAKE_SRC"
+        make -C "$PREMAKE_SRC" -f Bootstrap.mak linux
+        cp "$PREMAKE_SRC/bin/release/premake5" "$PREMAKE5"
+        chmod +x "$PREMAKE5"
+        rm -rf "$PREMAKE_SRC" /tmp/premake-src.zip
     else
-        echo "Unsupported OS: $OS"
+        echo "Unsupported OS/arch: $OS/$HOST_ARCH"
         exit 1
     fi
-    curl -L "$PREMAKE_URL" | tar xz -C "$PROJECT_ROOT/deps/bin"
-    chmod +x "$PREMAKE5"
+    if [ -z "${PREMAKE_URL:-}" ]; then
+        : # Already built from source
+    else
+        curl -L "$PREMAKE_URL" | tar xz -C "$PROJECT_ROOT/deps/bin"
+        chmod +x "$PREMAKE5"
+    fi
 fi
 
 echo "==> Using premake5 at: $PREMAKE5"
