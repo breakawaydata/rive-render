@@ -42,6 +42,35 @@ fi
 
 echo "==> Using premake5 at: $PREMAKE5"
 
+# --- Patch rive-runtime's Vulkan library loader ---
+# Add more candidate paths so MoltenVK is found when installed via Homebrew
+# or bundled next to the executable.
+VULKAN_LIB_CPP="$RIVE_RUNTIME/renderer/rive_vk_bootstrap/src/vulkan_library.cpp"
+if [ -f "$VULKAN_LIB_CPP" ] && ! grep -q "RIVE_RENDER_MVK_PATHS" "$VULKAN_LIB_CPP"; then
+    echo "==> Patching rive-runtime vulkan_library.cpp with extra MoltenVK candidate paths..."
+    python3 - "$VULKAN_LIB_CPP" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+# Insert extra candidates after "libMoltenVK.dylib",
+old = '        "libMoltenVK.dylib",\n'
+new = (
+    '        "libMoltenVK.dylib",\n'
+    '        // RIVE_RENDER_MVK_PATHS: extra candidates for rive-render\n'
+    '        "/opt/homebrew/lib/libMoltenVK.dylib", // ARM macOS Homebrew\n'
+    '        "/usr/local/lib/libMoltenVK.dylib",    // Intel macOS Homebrew\n'
+)
+if old not in content:
+    raise SystemExit("ERROR: Could not find patch target in vulkan_library.cpp")
+content = content.replace(old, new, 1)
+with open(path, 'w') as f:
+    f.write(content)
+print("Patched vulkan_library.cpp")
+PYEOF
+fi
+
 # --- Build MoltenVK on macOS if not already built ---
 if [ "$OS" = "Darwin" ]; then
     MOLTENVK_LIB="$RIVE_RUNTIME/renderer/dependencies/MoltenVK/Package/Release/MoltenVK/dylib/macOS/libMoltenVK.dylib"
