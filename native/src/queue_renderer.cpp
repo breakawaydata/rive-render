@@ -158,16 +158,16 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         if (!config.viewModelData.properties.empty())
         {
             // Use named ViewModel if specified, otherwise default
-            auto vmHandle = !config.viewModelData.viewModel.empty()
-                                ? (!config.viewModelData.instance.empty()
-                                       ? queue->instantiateViewModelInstanceNamed(
-                                             fileHandle, abHandle, config.viewModelData.instance)
-                                       : queue->instantiateBlankViewModelInstance(
-                                             fileHandle, abHandle))
-                            : config.viewModelData.instance.empty()
-                                ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
-                                : queue->instantiateViewModelInstanceNamed(
-                                      fileHandle, abHandle, config.viewModelData.instance);
+            auto vmHandle =
+                !config.viewModelData.viewModel.empty()
+                    ? (!config.viewModelData.instance.empty()
+                           ? queue->instantiateViewModelInstanceNamed(fileHandle, abHandle,
+                                                                      config.viewModelData.instance)
+                           : queue->instantiateBlankViewModelInstance(fileHandle, abHandle))
+                : config.viewModelData.instance.empty()
+                    ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
+                    : queue->instantiateViewModelInstanceNamed(fileHandle, abHandle,
+                                                               config.viewModelData.instance);
 
             // Set properties
             for (auto& [path, prop] : config.viewModelData.properties)
@@ -195,31 +195,30 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             bool inputsDone = false;
 
             auto inputDrawKey = queue->createDrawKey();
-            queue->draw(inputDrawKey, CommandServerDrawCallback(
-                                          [&](DrawKey, CommandServer* srv)
-                                          {
-                                              auto* sm = srv->getStateMachineInstance(smHandle);
-                                              if (sm)
-                                              {
-                                                  for (auto& [name, value] :
-                                                       config.stateMachineNumberInputs)
-                                                  {
-                                                      auto* input = sm->getNumber(name);
-                                                      if (input)
-                                                          input->value(value);
-                                                  }
-                                                  for (auto& [name, value] :
-                                                       config.stateMachineBoolInputs)
-                                                  {
-                                                      auto* input = sm->getBool(name);
-                                                      if (input)
-                                                          input->value(value);
-                                                  }
-                                              }
-                                              std::lock_guard<std::mutex> lock(inputMtx);
-                                              inputsDone = true;
-                                              inputCv.notify_one();
-                                          }));
+            queue->draw(inputDrawKey,
+                        CommandServerDrawCallback(
+                            [&](DrawKey, CommandServer* srv)
+                            {
+                                auto* sm = srv->getStateMachineInstance(smHandle);
+                                if (sm)
+                                {
+                                    for (auto& [name, value] : config.stateMachineNumberInputs)
+                                    {
+                                        auto* input = sm->getNumber(name);
+                                        if (input)
+                                            input->value(value);
+                                    }
+                                    for (auto& [name, value] : config.stateMachineBoolInputs)
+                                    {
+                                        auto* input = sm->getBool(name);
+                                        if (input)
+                                            input->value(value);
+                                    }
+                                }
+                                std::lock_guard<std::mutex> lock(inputMtx);
+                                inputsDone = true;
+                                inputCv.notify_one();
+                            }));
 
             // Wait for inputs to be applied before warmup
             std::unique_lock<std::mutex> lock(inputMtx);
@@ -264,7 +263,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             queue->draw(drawKey, CommandServerDrawCallback(
                                      [&](DrawKey, CommandServer* srv)
                                      {
-
                                          // Get artboard from server (owns the instance)
                                          auto* artboard = srv->getArtboardInstance(abHandle);
                                          if (!artboard)

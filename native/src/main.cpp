@@ -63,10 +63,8 @@ static void preloadMoltenVK()
         std::string dir(exePath);
         dir = dir.substr(0, dir.rfind('/'));
         std::string mvkPath = dir + "/libMoltenVK.dylib";
-        fprintf(stderr, "[rive-render] Trying MoltenVK at: %s\n", mvkPath.c_str());
-        void* h = dlopen(mvkPath.c_str(), RTLD_GLOBAL | RTLD_LAZY);
-        if (h) { fprintf(stderr, "[rive-render] Loaded MoltenVK from binary dir\n"); return; }
-        fprintf(stderr, "[rive-render] dlopen failed: %s\n", dlerror());
+        if (dlopen(mvkPath.c_str(), RTLD_GLOBAL | RTLD_LAZY))
+            return;
     }
 
     // Try common Homebrew and system locations
@@ -77,12 +75,10 @@ static void preloadMoltenVK()
     };
     for (const char** p = paths; *p; ++p)
     {
-        fprintf(stderr, "[rive-render] Trying MoltenVK at: %s\n", *p);
-        void* h = dlopen(*p, RTLD_GLOBAL | RTLD_LAZY);
-        if (h) { fprintf(stderr, "[rive-render] Loaded MoltenVK from: %s\n", *p); return; }
-        fprintf(stderr, "[rive-render] dlopen failed: %s\n", dlerror());
+        if (dlopen(*p, RTLD_GLOBAL | RTLD_LAZY))
+            return;
     }
-    fprintf(stderr, "[rive-render] WARNING: Could not preload MoltenVK\n");
+    // If none found, Vulkan init will fail later with a clear error
 }
 #endif
 
@@ -261,13 +257,12 @@ int main(int argc, char* argv[])
                 // Create by viewModel name + instance name
                 if (!config.viewModelData.viewModel.empty())
                 {
-                    vmInstance = file->createViewModelInstance(
-                        config.viewModelData.viewModel, config.viewModelData.instance);
+                    vmInstance = file->createViewModelInstance(config.viewModelData.viewModel,
+                                                               config.viewModelData.instance);
                 }
                 else
                 {
-                    vmInstance =
-                        file->createViewModelInstance(config.viewModelData.instance);
+                    vmInstance = file->createViewModelInstance(config.viewModelData.instance);
                 }
             }
             else
@@ -279,9 +274,8 @@ int main(int argc, char* argv[])
             if (vmInstance)
             {
                 // Use ViewModelRuntime API to set properties
-                auto vmRuntime =
-                    rive::rcp<rive::ViewModelInstanceRuntime>(
-                        new rive::ViewModelInstanceRuntime(vmInstance));
+                auto vmRuntime = rive::rcp<rive::ViewModelInstanceRuntime>(
+                    new rive::ViewModelInstanceRuntime(vmInstance));
 
                 for (auto& [path, prop] : config.viewModelData.properties)
                 {
