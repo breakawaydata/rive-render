@@ -53,9 +53,14 @@
 #endif
 
 #ifdef __APPLE__
+// Preload MoltenVK from the binary's own directory so it's available
+// without requiring the user to set DYLD_LIBRARY_PATH or install it via
+// Homebrew. This handles the case where libMoltenVK.dylib is bundled
+// alongside the binary (as done by the rive-render npm postinstall).
+// The rive-runtime's vulkan_library.cpp has been patched at build time
+// to also search /opt/homebrew/lib and /usr/local/lib as fallbacks.
 static void preloadMoltenVK()
 {
-    // Try to load MoltenVK from the binary's own directory first
     char exePath[1024];
     uint32_t size = sizeof(exePath);
     if (_NSGetExecutablePath(exePath, &size) == 0)
@@ -63,22 +68,9 @@ static void preloadMoltenVK()
         std::string dir(exePath);
         dir = dir.substr(0, dir.rfind('/'));
         std::string mvkPath = dir + "/libMoltenVK.dylib";
-        if (dlopen(mvkPath.c_str(), RTLD_GLOBAL | RTLD_LAZY))
+        if (dlopen(mvkPath.c_str(), RTLD_NOW | RTLD_GLOBAL))
             return;
     }
-
-    // Try common Homebrew and system locations
-    const char* paths[] = {
-        "/opt/homebrew/lib/libMoltenVK.dylib", // ARM macOS Homebrew
-        "/usr/local/lib/libMoltenVK.dylib",    // Intel macOS Homebrew
-        nullptr,
-    };
-    for (const char** p = paths; *p; ++p)
-    {
-        if (dlopen(*p, RTLD_GLOBAL | RTLD_LAZY))
-            return;
-    }
-    // If none found, Vulkan init will fail later with a clear error
 }
 #endif
 
