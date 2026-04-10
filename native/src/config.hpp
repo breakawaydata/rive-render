@@ -54,6 +54,10 @@ struct Config
     ViewModelDataConfig viewModelData;
     AssetConfig assets;
 
+    // State machine input overrides
+    std::map<std::string, float> stateMachineNumberInputs;
+    std::map<std::string, bool> stateMachineBoolInputs;
+
     // ffmpeg path for video encoding
     std::string ffmpegPath = "ffmpeg";
 

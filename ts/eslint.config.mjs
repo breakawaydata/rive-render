@@ -12,5 +12,26 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/no-require-imports": "off",
     },
+  },
+  {
+    // Node.js CommonJS scripts (postinstall, etc.)
+    files: ["scripts/**/*.js"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        __dirname: "readonly",
+        __filename: "readonly",
+        Buffer: "readonly",
+        console: "readonly",
+        exports: "writable",
+        global: "readonly",
+        module: "writable",
+        process: "readonly",
+        require: "readonly",
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
   }
 );

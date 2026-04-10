@@ -154,6 +154,131 @@ void skipValue(const std::string& s, size_t& i)
     }
 }
 
+// Parse a hex color string like "#FF5500" or "#80FF5500" into a uint32_t ARGB value
+uint32_t parseHexColor(const std::string& hex)
+{
+    std::string h = hex;
+    if (!h.empty() && h[0] == '#')
+        h = h.substr(1);
+
+    uint32_t value = 0;
+    for (char c : h)
+    {
+        value <<= 4;
+        if (c >= '0' && c <= '9')
+            value |= (c - '0');
+        else if (c >= 'a' && c <= 'f')
+            value |= (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            value |= (c - 'A' + 10);
+    }
+
+    // If 6 hex digits (RGB), assume full alpha
+    if (h.size() == 6)
+        value = 0xFF000000 | value;
+
+    return value;
+}
+
+// Parse a ViewModelData properties sub-object: { "propName": { "type": "...", "value": ... }, ... }
+std::map<std::string, ViewModelPropertyValue> parseViewModelProperties(const std::string& s,
+                                                                       size_t& i)
+{
+    std::map<std::string, ViewModelPropertyValue> result;
+    i = skipWs(s, i);
+    if (s[i] != '{')
+        throw std::runtime_error("Expected '{'");
+    ++i;
+    while (true)
+    {
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        if (s[i] == ',')
+            ++i;
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        auto propName = parseString(s, i);
+        i = skipWs(s, i);
+        if (s[i] != ':')
+            throw std::runtime_error("Expected ':'");
+        ++i;
+        i = skipWs(s, i);
+
+        // Parse the property value object: { "type": "...", "value": ... }
+        ViewModelPropertyValue prop;
+        if (s[i] != '{')
+            throw std::runtime_error("Expected property value object");
+        ++i;
+        while (true)
+        {
+            i = skipWs(s, i);
+            if (s[i] == '}')
+            {
+                ++i;
+                break;
+            }
+            if (s[i] == ',')
+                ++i;
+            i = skipWs(s, i);
+            if (s[i] == '}')
+            {
+                ++i;
+                break;
+            }
+            auto pkey = parseString(s, i);
+            i = skipWs(s, i);
+            if (s[i] != ':')
+                throw std::runtime_error("Expected ':'");
+            ++i;
+            i = skipWs(s, i);
+            if (pkey == "type")
+            {
+                prop.type = parseString(s, i);
+            }
+            else if (pkey == "value")
+            {
+                // Value type depends on the property type, but we may not
+                // have parsed "type" yet. Parse the JSON value and store
+                // into all fields that make sense for the literal type.
+                if (s[i] == '"')
+                {
+                    // String or color or enum value
+                    prop.stringValue = parseString(s, i);
+                }
+                else if (s[i] == 't' || s[i] == 'f')
+                {
+                    prop.boolValue = parseBool(s, i);
+                }
+                else
+                {
+                    prop.numberValue = parseNumber(s, i);
+                }
+            }
+            else
+            {
+                skipValue(s, i);
+            }
+        }
+
+        // Post-process: if type is "color", convert the hex string to uint32_t
+        if (prop.type == "color" && !prop.stringValue.empty())
+        {
+            prop.colorValue = parseHexColor(prop.stringValue);
+        }
+
+        result[propName] = prop;
+    }
+    return result;
+}
+
 // Parse a flat string->string map
 std::map<std::string, std::string> parseStringMap(const std::string& s, size_t& i)
 {
@@ -357,6 +482,84 @@ Config Config::parse(const std::string& json)
                     cfg.assets.fonts = parseStringMap(json, i);
                 else
                     skipValue(json, i);
+            }
+        }
+        else if (key == "viewModelData")
+        {
+            // Parse viewModelData sub-object
+            i = skipWs(json, i);
+            if (json[i] != '{')
+                throw std::runtime_error("Expected viewModelData object");
+            ++i;
+            while (true)
+            {
+                i = skipWs(json, i);
+                if (json[i] == '}')
+                {
+                    ++i;
+                    break;
+                }
+                if (json[i] == ',')
+                    ++i;
+                i = skipWs(json, i);
+                if (json[i] == '}')
+                {
+                    ++i;
+                    break;
+                }
+                auto vkey = parseString(json, i);
+                i = skipWs(json, i);
+                if (json[i] != ':')
+                    throw std::runtime_error("Expected ':'");
+                ++i;
+                i = skipWs(json, i);
+                if (vkey == "viewModel")
+                    cfg.viewModelData.viewModel = parseString(json, i);
+                else if (vkey == "instance")
+                    cfg.viewModelData.instance = parseString(json, i);
+                else if (vkey == "properties")
+                    cfg.viewModelData.properties = parseViewModelProperties(json, i);
+                else
+                    skipValue(json, i);
+            }
+        }
+        else if (key == "stateMachineInputs")
+        {
+            // Parse stateMachineInputs: { "name": number|bool, ... }
+            i = skipWs(json, i);
+            if (json[i] != '{')
+                throw std::runtime_error("Expected stateMachineInputs object");
+            ++i;
+            while (true)
+            {
+                i = skipWs(json, i);
+                if (json[i] == '}')
+                {
+                    ++i;
+                    break;
+                }
+                if (json[i] == ',')
+                    ++i;
+                i = skipWs(json, i);
+                if (json[i] == '}')
+                {
+                    ++i;
+                    break;
+                }
+                auto inputName = parseString(json, i);
+                i = skipWs(json, i);
+                if (json[i] != ':')
+                    throw std::runtime_error("Expected ':'");
+                ++i;
+                i = skipWs(json, i);
+                if (json[i] == 't' || json[i] == 'f')
+                {
+                    cfg.stateMachineBoolInputs[inputName] = parseBool(json, i);
+                }
+                else
+                {
+                    cfg.stateMachineNumberInputs[inputName] = parseNumber(json, i);
+                }
             }
         }
         else
