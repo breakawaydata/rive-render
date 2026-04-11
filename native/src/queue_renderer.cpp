@@ -264,8 +264,13 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 sm->advanceAndApply(frameDt);
             else if (scene->linearAnim)
                 scene->linearAnim->advanceAndApply(frameDt);
-            else
-                artboard->advance(frameDt);
+
+            // Always advance the artboard in addition to any state machine /
+            // linear animation advance. Matches the old direct path, and is
+            // load-bearing for scenes that rely on artboard-level updates
+            // (e.g. teststatemachine.riv's transitions won't settle without
+            // it — frames end up frozen at a mid-transition pose).
+            artboard->advance(frameDt);
 
             return artboard;
         };
