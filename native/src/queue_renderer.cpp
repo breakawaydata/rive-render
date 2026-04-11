@@ -290,18 +290,17 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         const int renderFrames = config.hasScreenshot() ? 1 : totalFrames;
         for (int i = 0; i < renderFrames; i++)
         {
-            queue->draw(drawKey,
-                        CommandServerDrawCallback(
-                            [&, frameDt, advanceScene](DrawKey, CommandServer* srv)
-                            {
-                                auto* artboard = advanceScene(srv, frameDt);
-                                if (artboard)
-                                    currentFrame = headless.renderFrame(artboard, nullptr);
+            queue->draw(drawKey, CommandServerDrawCallback(
+                                     [&, frameDt, advanceScene](DrawKey, CommandServer* srv)
+                                     {
+                                         auto* artboard = advanceScene(srv, frameDt);
+                                         if (artboard)
+                                             currentFrame = headless.renderFrame(artboard, nullptr);
 
-                                std::lock_guard<std::mutex> lock(frameMutex);
-                                frameReady = true;
-                                frameCv.notify_one();
-                            }));
+                                         std::lock_guard<std::mutex> lock(frameMutex);
+                                         frameReady = true;
+                                         frameCv.notify_one();
+                                     }));
 
             // Wait for frame on main thread
             {
