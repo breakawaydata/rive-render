@@ -12,7 +12,7 @@ Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) with 
 - **State machine** and **linear animation** support
 - **View model data binding** for dynamic content
 - **Referenced asset loading** (images, fonts)
-- **CommandQueue/CommandServer** mode matching the Rive app runtime threading pattern
+- **Multi-threaded rendering** via Rive's `CommandQueue`/`CommandServer` (matches the Rive iOS/Android app runtimes)
 - **Visual regression testing** with jest-image-snapshot
 - Works on **macOS** (MoltenVK) and **Linux** (native Vulkan / SwiftShader)
 
@@ -172,20 +172,6 @@ await cli.render({
 });
 ```
 
-### CommandQueue/CommandServer Mode
-
-Use the multi-threaded rendering mode that matches the Rive app runtimes (iOS, Android). Handles async asset loading on a background thread:
-
-```typescript
-await cli.render({
-  rivFile: "animation.riv",
-  width: 800,
-  height: 600,
-  screenshot: { path: "out.png", timestamp: 1.0 },
-  useCommandQueue: true,
-});
-```
-
 ### Full Configuration
 
 ```typescript
@@ -214,7 +200,6 @@ interface RiveRenderConfig {
   };
   stateMachineInputs?: Record<string, boolean | number>;
   ffmpegPath?: string;
-  useCommandQueue?: boolean;
 }
 ```
 
@@ -397,13 +382,16 @@ TypeScript API (@breakawaydata/rive-render)
     v
 C++ CLI binary (rive_render)
     |
+    +-- CommandQueue / CommandServer
+    |     |  Client thread: config parsing, command submission, frame
+    |     |                 collection, output encoding
+    |     +- Background server thread: owns all Rive objects (file,
+    |        artboard, state machine, view model, assets). Processes
+    |        commands FIFO and executes per-frame draw callbacks.
+    |
     +-- Rive PLS Renderer (Vulkan -- full feathering support)
     |     +-- VulkanHeadlessFrameSynchronizer (offscreen rendering)
     |     +-- MoltenVK (macOS) / native Vulkan (Linux)
-    |
-    +-- CommandQueue/CommandServer (optional multi-threaded mode)
-    |     +-- Background thread: file loading, asset decoding, state machine
-    |     +-- Draw callback: renders on server thread via artboard->draw()
     |
     +-- Output encoders
           +-- PNG (stb_image_write)
@@ -415,11 +403,9 @@ C++ CLI binary (rive_render)
 
 The Rive Skia renderer does not support [feathering](https://rive.app/blog/rive-renderer-now-open-source-and-available-on-all-platforms), a key rendering feature. The PLS (Pixel Local Storage) renderer supports all Rive features including feathering, advanced blend modes, and image meshes.
 
-### Rendering Modes
+### Rendering pipeline
 
-**Direct mode** (default): Loads the `.riv` file, creates artboard and animation instances, advances frame-by-frame, and renders to an offscreen Vulkan surface. Supports both `StateMachine` and `LinearAnimation`.
-
-**CommandQueue/CommandServer mode** (`useCommandQueue: true`): Matches the threading pattern used by the official Rive iOS and Android runtimes. A background server thread owns all Rive objects and processes commands (file loading, asset decoding, state machine advancement). The draw callback executes on the server thread with safe access to the artboard instance. See [Renderer.mm](https://github.com/rive-app/rive-ios/blob/main/Source/Experimental/Renderer/Renderer.mm) for the reference implementation.
+rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`CommandServer` — the same pattern used by the official Rive iOS and Android runtimes. Referenced assets are decoded and globally registered, the `.riv` file is loaded, an artboard + state machine (or fallback linear animation) is instantiated, and each frame is advanced and rendered inside a draw callback that runs on the server thread. The client thread only submits commands and collects pixel buffers — no Rive object is ever touched from two threads. See [command_queue.hpp](https://github.com/rive-app/rive-runtime/blob/main/include/rive/command_queue.hpp) for the full API surface.
 
 ## Project Structure
 
@@ -428,8 +414,8 @@ rive-render/
 +-- native/                     C++ renderer binary
 |   +-- src/
 |   |   +-- main.cpp            Entry point, JSON config, orchestration
-|   |   +-- headless_renderer.* Vulkan headless setup + frame rendering
-|   |   +-- queue_renderer.*    CommandQueue/CommandServer mode
+|   |   +-- queue_renderer.*    CommandQueue driver: assets, artboard, frames
+|   |   +-- headless_renderer.* Offscreen Vulkan context + per-frame draw
 |   |   +-- config.*            JSON config parsing
 |   |   +-- output_png.*        PNG encoding (stb_image_write)
 |   |   +-- output_gif.*        GIF via ffmpeg

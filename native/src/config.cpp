@@ -363,10 +363,6 @@ Config Config::parse(const std::string& json)
         {
             cfg.ffmpegPath = parseString(json, i);
         }
-        else if (key == "useCommandQueue")
-        {
-            cfg.useCommandQueue = parseBool(json, i);
-        }
         else if (key == "screenshot")
         {
             // Parse screenshot sub-object
