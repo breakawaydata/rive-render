@@ -48,7 +48,6 @@ class QueueFileListener : public CommandQueue::FileListener
     }
 };
 
-
 // Wait for a condition, pumping messages on the queue
 template <typename Pred>
 static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int timeoutMs = 10000)
@@ -118,14 +117,16 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             throw std::runtime_error("Failed to load .riv: " + fileListener.errorMsg);
         }
 
-        // 6. Instantiate artboard
+        // 6. Instantiate artboard.
+        // Intentionally do NOT call setArtboardSize — that resizes the
+        // artboard's own bounds to the canvas, which distorts Yoga-layout
+        // positioning (basketball.riv shows this clearly: the ball drifts
+        // off-center and the floor shadow disappears). HeadlessRenderer
+        // already uses Fit::contain + Alignment::center against the
+        // artboard's natural bounds, so the scaling happens at draw time.
         auto abHandle = config.artboard.empty()
                             ? queue->instantiateDefaultArtboard(fileHandle)
                             : queue->instantiateArtboardNamed(fileHandle, config.artboard);
-
-        // Set artboard size
-        queue->setArtboardSize(abHandle, static_cast<float>(config.width),
-                               static_cast<float>(config.height));
 
         // 7. Instantiate state machine
         auto smHandle = config.stateMachine.empty()
@@ -210,9 +211,8 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         const float fps = config.hasOutput() ? config.output.fps : 60.0f;
         const float dt = 1.0f / fps;
         const int totalFrames =
-            config.hasOutput()
-                ? std::max(1, static_cast<int>(fps * config.output.duration))
-                : std::max(1, static_cast<int>(config.screenshot.timestamp * fps));
+            config.hasOutput() ? std::max(1, static_cast<int>(fps * config.output.duration))
+                               : std::max(1, static_cast<int>(config.screenshot.timestamp * fps));
 
         // 10. Render frames via draw callbacks.
         // All time advancement happens on the server thread inside the draw
@@ -245,52 +245,51 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             const float frameDt =
                 (config.hasScreenshot() && config.screenshot.timestamp == 0) ? 0.0f : dt;
 
-            queue->draw(drawKey,
-                        CommandServerDrawCallback(
-                            [&, frameDt, scene](DrawKey, CommandServer* srv)
-                            {
-                                auto* artboard = srv->getArtboardInstance(abHandle);
-                                if (!artboard)
-                                {
-                                    std::lock_guard<std::mutex> lock(frameMutex);
-                                    frameReady = true;
-                                    frameCv.notify_one();
-                                    return;
-                                }
+            queue->draw(drawKey, CommandServerDrawCallback(
+                                     [&, frameDt, scene](DrawKey, CommandServer* srv)
+                                     {
+                                         auto* artboard = srv->getArtboardInstance(abHandle);
+                                         if (!artboard)
+                                         {
+                                             std::lock_guard<std::mutex> lock(frameMutex);
+                                             frameReady = true;
+                                             frameCv.notify_one();
+                                             return;
+                                         }
 
-                                auto* sm = srv->getStateMachineInstance(smHandle);
+                                         auto* sm = srv->getStateMachineInstance(smHandle);
 
-                                // Lazy-init the linear animation fallback on
-                                // the first draw, once we know whether this
-                                // artboard has a state machine.
-                                if (!scene->initialized)
-                                {
-                                    scene->initialized = true;
-                                    if (!sm && artboard->animationCount() > 0)
-                                    {
-                                        scene->linearAnim = artboard->animationAt(0);
-                                    }
-                                }
+                                         // Lazy-init the linear animation fallback on
+                                         // the first draw, once we know whether this
+                                         // artboard has a state machine.
+                                         if (!scene->initialized)
+                                         {
+                                             scene->initialized = true;
+                                             if (!sm && artboard->animationCount() > 0)
+                                             {
+                                                 scene->linearAnim = artboard->animationAt(0);
+                                             }
+                                         }
 
-                                if (sm)
-                                {
-                                    sm->advanceAndApply(frameDt);
-                                }
-                                else if (scene->linearAnim)
-                                {
-                                    scene->linearAnim->advanceAndApply(frameDt);
-                                }
-                                else
-                                {
-                                    artboard->advance(frameDt);
-                                }
+                                         if (sm)
+                                         {
+                                             sm->advanceAndApply(frameDt);
+                                         }
+                                         else if (scene->linearAnim)
+                                         {
+                                             scene->linearAnim->advanceAndApply(frameDt);
+                                         }
+                                         else
+                                         {
+                                             artboard->advance(frameDt);
+                                         }
 
-                                currentFrame = headless.renderFrame(artboard, nullptr);
+                                         currentFrame = headless.renderFrame(artboard, nullptr);
 
-                                std::lock_guard<std::mutex> lock(frameMutex);
-                                frameReady = true;
-                                frameCv.notify_one();
-                            }));
+                                         std::lock_guard<std::mutex> lock(frameMutex);
+                                         frameReady = true;
+                                         frameCv.notify_one();
+                                     }));
 
             // Wait for frame on main thread
             {
