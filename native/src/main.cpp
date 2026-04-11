@@ -19,38 +19,37 @@
 #include <string>
 #include <vector>
 
-#ifdef __APPLE__
-#include <dlfcn.h>
-#include <mach-o/dyld.h>
+#ifdef __linux__
+#include <limits.h>
+#include <unistd.h>
 #endif
 
 #include "config.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
 #include "output_video.hpp"
-#ifdef RIVE_VULKAN
 #include "queue_renderer.hpp"
-#endif
 
-#ifdef __APPLE__
-// Preload MoltenVK from the binary's own directory so it's available
-// without requiring the user to set DYLD_LIBRARY_PATH or install it via
-// Homebrew. This handles the case where libMoltenVK.dylib is bundled
-// alongside the binary (as done by the rive-render npm postinstall).
-// The rive-runtime's vulkan_library.cpp has been patched at build time
-// to also search /opt/homebrew/lib and /usr/local/lib as fallbacks.
-static void preloadMoltenVK()
+#ifdef __linux__
+// Point the Vulkan loader at the SwiftShader ICD shipped next to the
+// binary. Must run before any rive-runtime code initializes Vulkan.
+static void enableBundledSwiftShader()
 {
-    char exePath[1024];
-    uint32_t size = sizeof(exePath);
-    if (_NSGetExecutablePath(exePath, &size) == 0)
+    char exePath[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len <= 0)
     {
-        std::string dir(exePath);
-        dir = dir.substr(0, dir.rfind('/'));
-        std::string mvkPath = dir + "/libMoltenVK.dylib";
-        if (dlopen(mvkPath.c_str(), RTLD_NOW | RTLD_GLOBAL))
-            return;
+        return;
     }
+    exePath[len] = '\0';
+    std::string dir(exePath);
+    auto slash = dir.rfind('/');
+    if (slash == std::string::npos)
+    {
+        return;
+    }
+    std::string icdPath = dir.substr(0, slash) + "/vk_swiftshader_icd.json";
+    setenv("VK_ICD_FILENAMES", icdPath.c_str(), 1);
 }
 #endif
 
@@ -90,16 +89,6 @@ static void outputJson(bool success, const std::string& outputPath = "", int fra
 
 int main(int argc, char* argv[])
 {
-#ifdef __APPLE__
-    preloadMoltenVK();
-#endif
-
-#ifndef RIVE_VULKAN
-    std::cerr << "ERROR: Built without Vulkan support. Cannot render." << std::endl;
-    outputJson(false, "", 0, "No Vulkan support");
-    return 1;
-#else
-
     try
     {
         // Read JSON config from stdin (or --config file)
@@ -124,6 +113,13 @@ int main(int argc, char* argv[])
 
         auto config = Config::parse(jsonStr);
         auto rivBytes = readFileBytes(config.rivFile);
+
+#ifdef __linux__
+        if (config.swiftshader)
+        {
+            enableBundledSwiftShader();
+        }
+#endif
 
         auto result = renderWithQueue(config, rivBytes);
 
@@ -180,5 +176,4 @@ int main(int argc, char* argv[])
         outputJson(false, "", 0, e.what());
         return 1;
     }
-#endif
 }

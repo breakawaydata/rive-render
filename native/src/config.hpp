@@ -61,6 +61,10 @@ struct Config
     // ffmpeg path for video encoding
     std::string ffmpegPath = "ffmpeg";
 
+    // Linux only: route rendering through bundled SwiftShader ICD
+    // (software Vulkan). Ignored on macOS, which always uses Metal.
+    bool swiftshader = false;
+
     bool hasScreenshot() const { return !screenshot.path.empty(); }
     bool hasOutput() const { return !output.path.empty(); }
 
