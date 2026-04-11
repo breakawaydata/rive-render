@@ -205,14 +205,18 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         }
 
         // 9. Determine frame parameters.
-        // For GIFs/videos, use the configured fps and duration.
         // For screenshots, step at a fixed 60 Hz and advance up to
         // `screenshot.timestamp`, keeping only the final rendered frame.
-        const float fps = config.hasOutput() ? config.output.fps : 60.0f;
+        // For GIFs/videos, use the configured fps and duration.
+        // Screenshot takes priority when both are present — that matches
+        // main.cpp's post-render branch ordering, so the frame count and
+        // the output selector can't disagree.
+        const float fps = config.hasScreenshot() ? 60.0f : config.output.fps;
         const float dt = 1.0f / fps;
         const int totalFrames =
-            config.hasOutput() ? std::max(1, static_cast<int>(fps * config.output.duration))
-                               : std::max(1, static_cast<int>(config.screenshot.timestamp * fps));
+            config.hasScreenshot()
+                ? std::max(1, static_cast<int>(config.screenshot.timestamp * fps))
+                : std::max(1, static_cast<int>(fps * config.output.duration));
 
         // 10. Render frames via draw callbacks.
         // All time advancement happens on the server thread inside the draw
