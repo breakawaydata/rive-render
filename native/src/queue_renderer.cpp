@@ -238,58 +238,70 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
 
         auto drawKey = queue->createDrawKey();
 
-        for (int i = 0; i < totalFrames; i++)
+        // Advances the scene on the server thread. Lazy-inits the linear
+        // animation fallback the first time it runs. Shared by both advance-
+        // only callbacks (screenshot warmup) and the full draw callback, so
+        // they share the same SceneCache and produce identical scene state.
+        auto advanceScene = [abHandle, smHandle, scene](CommandServer* srv, float frameDt)
         {
-            // Screenshots may request t=0 — we still render one frame but with
-            // zero advance. Every other case advances by `dt` before drawing.
-            const float frameDt =
-                (config.hasScreenshot() && config.screenshot.timestamp == 0) ? 0.0f : dt;
+            auto* artboard = srv->getArtboardInstance(abHandle);
+            if (!artboard)
+                return static_cast<ArtboardInstance*>(nullptr);
 
-            queue->draw(drawKey, CommandServerDrawCallback(
-                                     [&, frameDt, scene](DrawKey, CommandServer* srv)
-                                     {
-                                         auto* artboard = srv->getArtboardInstance(abHandle);
-                                         if (!artboard)
-                                         {
-                                             std::lock_guard<std::mutex> lock(frameMutex);
-                                             frameReady = true;
-                                             frameCv.notify_one();
-                                             return;
-                                         }
+            auto* sm = srv->getStateMachineInstance(smHandle);
+            if (!scene->initialized)
+            {
+                scene->initialized = true;
+                if (!sm && artboard->animationCount() > 0)
+                    scene->linearAnim = artboard->animationAt(0);
+            }
 
-                                         auto* sm = srv->getStateMachineInstance(smHandle);
+            if (sm)
+                sm->advanceAndApply(frameDt);
+            else if (scene->linearAnim)
+                scene->linearAnim->advanceAndApply(frameDt);
+            else
+                artboard->advance(frameDt);
 
-                                         // Lazy-init the linear animation fallback on
-                                         // the first draw, once we know whether this
-                                         // artboard has a state machine.
-                                         if (!scene->initialized)
-                                         {
-                                             scene->initialized = true;
-                                             if (!sm && artboard->animationCount() > 0)
-                                             {
-                                                 scene->linearAnim = artboard->animationAt(0);
-                                             }
-                                         }
+            return artboard;
+        };
 
-                                         if (sm)
-                                         {
-                                             sm->advanceAndApply(frameDt);
-                                         }
-                                         else if (scene->linearAnim)
-                                         {
-                                             scene->linearAnim->advanceAndApply(frameDt);
-                                         }
-                                         else
-                                         {
-                                             artboard->advance(frameDt);
-                                         }
+        // Screenshots may request t=0 — we still render one frame but with
+        // zero advance. Every other case advances by `dt` each step.
+        const float frameDt =
+            (config.hasScreenshot() && config.screenshot.timestamp == 0) ? 0.0f : dt;
 
-                                         currentFrame = headless.renderFrame(artboard, nullptr);
+        // Screenshot warmup: advance the scene via runOnce callbacks (CPU
+        // only, no GPU render) for every frame except the final one. This
+        // matches the old direct path's behaviour — a timestamp=10 screenshot
+        // should do one Vulkan render pass, not 600.
+        if (config.hasScreenshot())
+        {
+            for (int i = 0; i < totalFrames - 1; i++)
+            {
+                queue->runOnce([advanceScene, frameDt](CommandServer* srv)
+                               { advanceScene(srv, frameDt); });
+            }
+        }
 
-                                         std::lock_guard<std::mutex> lock(frameMutex);
-                                         frameReady = true;
-                                         frameCv.notify_one();
-                                     }));
+        // Per-frame render loop. For screenshots this executes exactly once
+        // (producing the final frame); for animation output it runs once per
+        // frame and keeps every frame.
+        const int renderFrames = config.hasScreenshot() ? 1 : totalFrames;
+        for (int i = 0; i < renderFrames; i++)
+        {
+            queue->draw(drawKey,
+                        CommandServerDrawCallback(
+                            [&, frameDt, advanceScene](DrawKey, CommandServer* srv)
+                            {
+                                auto* artboard = advanceScene(srv, frameDt);
+                                if (artboard)
+                                    currentFrame = headless.renderFrame(artboard, nullptr);
+
+                                std::lock_guard<std::mutex> lock(frameMutex);
+                                frameReady = true;
+                                frameCv.notify_one();
+                            }));
 
             // Wait for frame on main thread
             {
@@ -298,14 +310,7 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 frameReady = false;
             }
 
-            if (config.hasOutput())
-            {
-                frames.push_back(std::move(currentFrame));
-            }
-            else if (i == totalFrames - 1)
-            {
-                frames.push_back(std::move(currentFrame));
-            }
+            frames.push_back(std::move(currentFrame));
         }
 
         // 11. Cleanup
