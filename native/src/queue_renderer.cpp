@@ -10,8 +10,10 @@
 #include <stdexcept>
 #include <thread>
 
+#include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_input_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
+#include "rive/artboard.hpp"
 #include "rive/command_queue.hpp"
 #include "rive/command_server.hpp"
 
@@ -46,26 +48,6 @@ class QueueFileListener : public CommandQueue::FileListener
     }
 };
 
-// Image listener to track async decoding
-class QueueImageListener : public CommandQueue::RenderImageListener
-{
-  public:
-    std::atomic<int> decoded{0};
-    std::atomic<int> total{0};
-
-    void onRenderImageDecoded(const RenderImageHandle, uint64_t) override { decoded.fetch_add(1); }
-};
-
-// Font listener to track async decoding
-class QueueFontListener : public CommandQueue::FontListener
-{
-  public:
-    std::atomic<int> decoded{0};
-    std::atomic<int> total{0};
-
-    void onFontDecoded(const FontHandle, uint64_t) override { decoded.fetch_add(1); }
-};
-
 // Wait for a condition, pumping messages on the queue
 template <typename Pred>
 static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int timeoutMs = 10000)
@@ -96,9 +78,34 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
     // 3. Start server on background thread
     std::thread serverThread([&server]() { server.serveUntilDisconnect(); });
 
+    // CommandFileAssetLoader matches by FileAsset::uniqueName(), which is the
+    // base name plus asset id with the extension stripped (see
+    // file_asset.cpp::uniqueName). Users typically supply the uniqueFilename
+    // ("flower-45020.png"), so strip the trailing extension to line up.
+    auto toUniqueName = [](const std::string& key)
+    {
+        auto dot = key.rfind('.');
+        return dot == std::string::npos ? key : key.substr(0, dot);
+    };
+
     try
     {
-        // 4. Load file
+        // 4. Decode and register referenced assets BEFORE loading the file.
+        //    Commands are processed in order on the server thread, so the
+        //    CommandFileAssetLoader sees the global registrations when the
+        //    subsequent loadFile runs — no explicit wait required.
+        for (auto& [name, path] : config.assets.images)
+        {
+            auto handle = queue->decodeImage(readAssetFile(path));
+            queue->addGlobalImageAsset(toUniqueName(name), handle);
+        }
+        for (auto& [name, path] : config.assets.fonts)
+        {
+            auto handle = queue->decodeFont(readAssetFile(path));
+            queue->addGlobalFontAsset(toUniqueName(name), handle);
+        }
+
+        // 5. Load file
         QueueFileListener fileListener;
         auto fileHandle =
             queue->loadFile(std::vector<uint8_t>(rivBytes.begin(), rivBytes.end()), &fileListener);
@@ -110,44 +117,16 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             throw std::runtime_error("Failed to load .riv: " + fileListener.errorMsg);
         }
 
-        // 5. Decode referenced assets
-        QueueImageListener imageListener;
-        for (auto& [name, path] : config.assets.images)
-        {
-            auto bytes = readAssetFile(path);
-            imageListener.total.fetch_add(1);
-            queue->decodeImage(std::move(bytes), &imageListener);
-        }
-
-        QueueFontListener fontListener;
-        for (auto& [name, path] : config.assets.fonts)
-        {
-            auto bytes = readAssetFile(path);
-            fontListener.total.fetch_add(1);
-            queue->decodeFont(std::move(bytes), &fontListener);
-        }
-
-        // Wait for all assets to decode
-        if (imageListener.total.load() > 0 || fontListener.total.load() > 0)
-        {
-            waitFor(
-                queue,
-                [&]()
-                {
-                    return imageListener.decoded.load() >= imageListener.total.load() &&
-                           fontListener.decoded.load() >= fontListener.total.load();
-                },
-                "asset decoding", 30000);
-        }
-
-        // 6. Instantiate artboard
+        // 6. Instantiate artboard.
+        // Intentionally do NOT call setArtboardSize — that resizes the
+        // artboard's own bounds to the canvas, which distorts Yoga-layout
+        // positioning (basketball.riv shows this clearly: the ball drifts
+        // off-center and the floor shadow disappears). HeadlessRenderer
+        // already uses Fit::contain + Alignment::center against the
+        // artboard's natural bounds, so the scaling happens at draw time.
         auto abHandle = config.artboard.empty()
                             ? queue->instantiateDefaultArtboard(fileHandle)
                             : queue->instantiateArtboardNamed(fileHandle, config.artboard);
-
-        // Set artboard size
-        queue->setArtboardSize(abHandle, static_cast<float>(config.width),
-                               static_cast<float>(config.height));
 
         // 7. Instantiate state machine
         auto smHandle = config.stateMachine.empty()
@@ -225,26 +204,36 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             inputCv.wait(lock, [&] { return inputsDone; });
         }
 
-        // 9. Determine frame parameters
-        float fps = config.hasOutput() ? config.output.fps : 60.0f;
-        float dt = 1.0f / fps;
+        // 9. Determine frame parameters.
+        // For screenshots, step at a fixed 60 Hz and advance up to
+        // `screenshot.timestamp`, keeping only the final rendered frame.
+        // For GIFs/videos, use the configured fps and duration.
+        // Screenshot takes priority when both are present — that matches
+        // main.cpp's post-render branch ordering, so the frame count and
+        // the output selector can't disagree.
+        const float fps = config.hasScreenshot() ? 60.0f : config.output.fps;
+        const float dt = 1.0f / fps;
+        const int totalFrames =
+            config.hasScreenshot()
+                ? std::max(1, static_cast<int>(config.screenshot.timestamp * fps))
+                : std::max(1, static_cast<int>(fps * config.output.duration));
 
-        // For screenshots: advance to timestamp first
-        if (config.hasScreenshot() && config.screenshot.timestamp > 0)
+        // 10. Render frames via draw callbacks.
+        // All time advancement happens on the server thread inside the draw
+        // callback so that both state machines *and* linear animations (which
+        // have no first-class CommandQueue command) can drive the scene.
+        // A per-server-thread scene cache holds the lazily-created
+        // LinearAnimationInstance so it is advanced by the same instance each
+        // frame — recreating it would reset elapsed time.
+        struct SceneCache
         {
-            float warmupDt = 1.0f / 60.0f;
-            int warmupFrames = static_cast<int>(config.screenshot.timestamp * 60.0f);
-            for (int i = 0; i < warmupFrames; i++)
-            {
-                queue->advanceStateMachine(smHandle, warmupDt);
-            }
-        }
+            bool initialized = false;
+            std::unique_ptr<LinearAnimationInstance> linearAnim;
+        };
+        auto scene = std::make_shared<SceneCache>();
 
-        int totalFrames = config.hasOutput() ? static_cast<int>(fps * config.output.duration) : 1;
-
-        // 10. Render frames via draw callback
         std::vector<std::vector<uint8_t>> frames;
-        frames.reserve(totalFrames);
+        frames.reserve(config.hasOutput() ? totalFrames : 1);
 
         std::mutex frameMutex;
         std::condition_variable frameCv;
@@ -253,35 +242,69 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
 
         auto drawKey = queue->createDrawKey();
 
-        for (int i = 0; i < totalFrames; i++)
+        // Advances the scene on the server thread. Lazy-inits the linear
+        // animation fallback the first time it runs. Shared by both advance-
+        // only callbacks (screenshot warmup) and the full draw callback, so
+        // they share the same SceneCache and produce identical scene state.
+        auto advanceScene = [abHandle, smHandle, scene](CommandServer* srv, float frameDt)
         {
-            if (config.hasOutput())
+            auto* artboard = srv->getArtboardInstance(abHandle);
+            if (!artboard)
+                return static_cast<ArtboardInstance*>(nullptr);
+
+            auto* sm = srv->getStateMachineInstance(smHandle);
+            if (!scene->initialized)
             {
-                queue->advanceStateMachine(smHandle, dt);
+                scene->initialized = true;
+                if (!sm && artboard->animationCount() > 0)
+                    scene->linearAnim = artboard->animationAt(0);
             }
 
+            if (sm)
+                sm->advanceAndApply(frameDt);
+            else if (scene->linearAnim)
+                scene->linearAnim->advanceAndApply(frameDt);
+
+            // Always advance the artboard in addition to any state machine /
+            // linear animation advance. Matches the old direct path, and is
+            // load-bearing for scenes that rely on artboard-level updates
+            // (e.g. teststatemachine.riv's transitions won't settle without
+            // it — frames end up frozen at a mid-transition pose).
+            artboard->advance(frameDt);
+
+            return artboard;
+        };
+
+        // Screenshots may request t=0 — we still render one frame but with
+        // zero advance. Every other case advances by `dt` each step.
+        const float frameDt =
+            (config.hasScreenshot() && config.screenshot.timestamp == 0) ? 0.0f : dt;
+
+        // Screenshot warmup: advance the scene via runOnce callbacks (CPU
+        // only, no GPU render) for every frame except the final one. This
+        // matches the old direct path's behaviour — a timestamp=10 screenshot
+        // should do one Vulkan render pass, not 600.
+        if (config.hasScreenshot())
+        {
+            for (int i = 0; i < totalFrames - 1; i++)
+            {
+                queue->runOnce([advanceScene, frameDt](CommandServer* srv)
+                               { advanceScene(srv, frameDt); });
+            }
+        }
+
+        // Per-frame render loop. For screenshots this executes exactly once
+        // (producing the final frame); for animation output it runs once per
+        // frame and keeps every frame.
+        const int renderFrames = config.hasScreenshot() ? 1 : totalFrames;
+        for (int i = 0; i < renderFrames; i++)
+        {
             queue->draw(drawKey, CommandServerDrawCallback(
-                                     [&](DrawKey, CommandServer* srv)
+                                     [&, frameDt, advanceScene](DrawKey, CommandServer* srv)
                                      {
-                                         // Get artboard from server (owns the instance)
-                                         auto* artboard = srv->getArtboardInstance(abHandle);
-                                         if (!artboard)
-                                         {
-                                             std::lock_guard<std::mutex> lock(frameMutex);
-                                             frameReady = true;
-                                             frameCv.notify_one();
-                                             return;
-                                         }
-
-                                         // Get render context from server's factory
-                                         // (matches Apple runtime: riveContext =
-                                         //    static_cast<RenderContext*>(server->factory()))
-                                         auto* riveContext =
-                                             static_cast<gpu::RenderContext*>(srv->factory());
-
-                                         // Render the frame using the headless renderer's
-                                         // Vulkan infrastructure but the server's artboard
-                                         currentFrame = headless.renderFrame(artboard, nullptr);
+                                         auto* artboard = advanceScene(srv, frameDt);
+                                         if (artboard)
+                                             currentFrame = headless.renderFrame(artboard, nullptr);
 
                                          std::lock_guard<std::mutex> lock(frameMutex);
                                          frameReady = true;
@@ -294,6 +317,7 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 frameCv.wait(lock, [&] { return frameReady; });
                 frameReady = false;
             }
+
             frames.push_back(std::move(currentFrame));
         }
 

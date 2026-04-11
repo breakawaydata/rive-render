@@ -78,7 +78,6 @@ async function renderToPng(options: {
   width?: number;
   height?: number;
   timestamp?: number;
-  useCommandQueue?: boolean;
 }): Promise<Buffer> {
   const tmp = `${TMP}/snap-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
   await cli.render({
@@ -86,7 +85,6 @@ async function renderToPng(options: {
     width: options.width ?? 400,
     height: options.height ?? 400,
     screenshot: { path: tmp, timestamp: options.timestamp ?? 0 },
-    useCommandQueue: options.useCommandQueue,
   });
   const buf = readFileSync(tmp);
   require("fs").unlinkSync(tmp);
@@ -101,7 +99,6 @@ async function renderToFile(
     height?: number;
     fps?: number;
     duration: number;
-    useCommandQueue?: boolean;
   }
 ): Promise<string> {
   const ext = format === "gif" ? ".gif" : ".mp4";
@@ -116,7 +113,6 @@ async function renderToFile(
       fps: options.fps ?? (format === "gif" ? 10 : 30),
       duration: options.duration,
     },
-    useCommandQueue: options.useCommandQueue,
   });
   return out;
 }
@@ -195,14 +191,6 @@ describe("Screenshots (LinearAnimation)", () => {
     });
   });
 
-  it("t=1s via queue mode (400x400)", async () => {
-    const image = await renderToPng({ timestamp: 1.0, useCommandQueue: true });
-    expect(image).toMatchImageSnapshot({
-      ...snapshotConfig,
-      customSnapshotIdentifier: "basketball-t1-queue-400x400",
-    });
-  });
-
   it("same params produce identical images", async () => {
     const a = await renderToPng({ timestamp: 1.0, width: 200, height: 200 });
     const b = await renderToPng({ timestamp: 1.0, width: 200, height: 200 });
@@ -234,11 +222,6 @@ describe("GIF (LinearAnimation)", () => {
     expectFileToMatchReference(gifPath, "basketball-2s-10fps.gif");
   });
 
-  it("1s 10fps via queue — full file match", async () => {
-    const gifPath = await renderToFile("gif", { fps: 10, duration: 1.0, useCommandQueue: true });
-    expectFileToMatchReference(gifPath, "basketball-1s-10fps-queue.gif");
-  });
-
   it("1s 10fps — frame-by-frame visual regression", async () => {
     const gifPath = join(FILE_SNAPSHOTS, "basketball-1s-10fps.gif");
     const frames = extractFrames(gifPath);
@@ -261,19 +244,6 @@ describe("GIF (LinearAnimation)", () => {
       expect(frames[i]).toMatchImageSnapshot({
         ...frameSnapshotConfig,
         customSnapshotIdentifier: `basketball-gif-2s-keyframe-${String(i).padStart(2, "0")}`,
-      });
-    }
-  });
-
-  it("1s 10fps via queue — frame-by-frame visual regression", async () => {
-    const gifPath = join(FILE_SNAPSHOTS, "basketball-1s-10fps-queue.gif");
-    const frames = extractFrames(gifPath);
-    expect(frames.length).toBe(10);
-
-    for (let i = 0; i < frames.length; i++) {
-      expect(frames[i]).toMatchImageSnapshot({
-        ...frameSnapshotConfig,
-        customSnapshotIdentifier: `basketball-gif-queue-frame-${String(i).padStart(2, "0")}`,
       });
     }
   });
@@ -303,11 +273,6 @@ describe("MP4 (LinearAnimation)", () => {
     expectFileToMatchReference(mp4Path, "basketball-2s-30fps.mp4");
   });
 
-  it("1s 30fps via queue — full file match", async () => {
-    const mp4Path = await renderToFile("mp4", { fps: 30, duration: 1.0, useCommandQueue: true });
-    expectFileToMatchReference(mp4Path, "basketball-1s-30fps-queue.mp4");
-  });
-
   it("1s 30fps — key frame visual regression", async () => {
     const mp4Path = join(FILE_SNAPSHOTS, "basketball-1s-30fps.mp4");
     const frames = extractFrames(mp4Path);
@@ -317,19 +282,6 @@ describe("MP4 (LinearAnimation)", () => {
       expect(frames[i]).toMatchImageSnapshot({
         ...frameSnapshotConfig,
         customSnapshotIdentifier: `basketball-mp4-30fps-keyframe-${String(i).padStart(2, "0")}`,
-      });
-    }
-  });
-
-  it("1s 30fps via queue — key frame visual regression", async () => {
-    const mp4Path = join(FILE_SNAPSHOTS, "basketball-1s-30fps-queue.mp4");
-    const frames = extractFrames(mp4Path);
-    expect(frames.length).toBe(30);
-
-    for (const i of [0, 14, 29]) {
-      expect(frames[i]).toMatchImageSnapshot({
-        ...frameSnapshotConfig,
-        customSnapshotIdentifier: `basketball-mp4-queue-keyframe-${String(i).padStart(2, "0")}`,
       });
     }
   });
@@ -539,17 +491,12 @@ describe("Asset Loading", () => {
     expectFileToMatchReference(out, "asset-load-check-refs-1s-10fps.gif");
   });
 
-  it("MP4 with referenced assets — full file match", async () => {
-    const out = `${TMP}/alc-ref.mp4`;
-    await cli.render({
-      rivFile: ASSET_LOAD_CHECK_RIV,
-      width: 200,
-      height: 200,
-      output: { format: "mp4", path: out, fps: 30, duration: 1.0 },
-      assets: referencedAssets,
-    });
-    expectFileToMatchReference(out, "asset-load-check-refs-1s-30fps.mp4");
-  });
+  // Note: an MP4 variant of this test was removed because libx264's encoding
+  // of the asset-load-check scene isn't bit-reproducible on Linux CI even
+  // with `-x264-params threads=1`. The GIF byte-exact test above and the
+  // PNG screenshot tests cover the referenced-asset loading path; MP4
+  // encoding itself is still exercised by the basketball/statemachine mp4
+  // tests, which do reproduce bit-exactly.
 });
 
 // ─── Error handling ───

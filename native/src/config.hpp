@@ -61,9 +61,6 @@ struct Config
     // ffmpeg path for video encoding
     std::string ffmpegPath = "ffmpeg";
 
-    // Use CommandQueue/CommandServer rendering mode
-    bool useCommandQueue = false;
-
     bool hasScreenshot() const { return !screenshot.path.empty(); }
     bool hasOutput() const { return !output.path.empty(); }
 

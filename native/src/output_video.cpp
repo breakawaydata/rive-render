@@ -21,19 +21,26 @@ void writeVideo(const std::string& outputPath, int width, int height, float fps,
         << " -r " << fps                    // frame rate
         << " -i pipe:0";                    // read from stdin
 
+    // Force single-threaded encoding for bit-reproducible output.
+    // Multi-threaded x264/libvpx rate control reads neighboring macroblocks
+    // in thread-scheduling order, which produces different output on
+    // different CPU topologies — CI runs regressed on asset-heavy scenes.
     if (format == "mp4")
     {
         cmd << " -c:v libx264"
             << " -pix_fmt yuv420p"
             << " -preset medium"
-            << " -crf 23";
+            << " -crf 23"
+            << " -x264-params threads=1:sliced-threads=0";
     }
     else if (format == "webm")
     {
         cmd << " -c:v libvpx-vp9"
             << " -pix_fmt yuv420p"
             << " -crf 30"
-            << " -b:v 0";
+            << " -b:v 0"
+            << " -threads 1"
+            << " -row-mt 0";
     }
     else
     {

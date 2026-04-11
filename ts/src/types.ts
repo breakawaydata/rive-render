@@ -64,8 +64,6 @@ export interface RiveRenderConfig {
   stateMachineInputs?: Record<string, boolean | number>;
   /** Path to ffmpeg binary (for video output) */
   ffmpegPath?: string;
-  /** Use CommandQueue/CommandServer mode (multi-threaded, matches app runtime pattern) */
-  useCommandQueue?: boolean;
 }
 
 export interface RenderResult {
