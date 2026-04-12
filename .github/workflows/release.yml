@@ -65,6 +65,11 @@ jobs:
         run: brew install glslang
 
       - name: Build native binary
+        env:
+          # Cap cmake parallelism for the SwiftShader sub-build —
+          # compiling llvm-10 with -j$(nproc) on a 4-core / 16 GB
+          # runner OOM-kills cc1plus mid-build. -j2 fits.
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
         run: bash scripts/build-native.sh release ${{ matrix.target_arch }}
 
       - name: Upload binary artifact
@@ -75,12 +80,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Upload MoltenVK (macOS only)
-        if: matrix.platform == 'darwin'
+      - name: Upload SwiftShader (Linux only)
+        if: matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: libMoltenVK-${{ matrix.artifact }}
-          path: deps/rive-runtime/renderer/dependencies/MoltenVK/Package/Release/MoltenVK/dylib/macOS/libMoltenVK.dylib
+          name: swiftshader-${{ matrix.arch }}
+          path: |
+            native/out/release/libvk_swiftshader.so
+            native/out/release/vk_swiftshader_icd.json
           if-no-files-found: error
           retention-days: 1
 
@@ -172,10 +179,17 @@ jobs:
             cp "artifacts/rive-render-${platform}/rive_render" "release-assets/rive-render-${platform}"
             chmod +x "release-assets/rive-render-${platform}"
           done
-          # Bundle MoltenVK for macOS platforms (same dylib works for both arm64 and x64)
-          if [ -d "artifacts/libMoltenVK-rive-render-darwin-arm64" ]; then
-            cp "artifacts/libMoltenVK-rive-render-darwin-arm64/libMoltenVK.dylib" "release-assets/libMoltenVK.dylib"
-          fi
+          # Bundle SwiftShader alongside each Linux binary. The postinstall
+          # script will download these two files next to the rive-render
+          # binary so the `"swiftshader": true` JSON config works out of the
+          # box on machines without a real Vulkan driver.
+          for arch in x64 arm64; do
+            src="artifacts/swiftshader-${arch}"
+            if [ -d "$src" ]; then
+              cp "$src/libvk_swiftshader.so" "release-assets/libvk_swiftshader-linux-${arch}.so"
+              cp "$src/vk_swiftshader_icd.json" "release-assets/vk_swiftshader_icd-linux-${arch}.json"
+            fi
+          done
 
       # Create GitHub Release FIRST — postinstall downloads from here
       - name: Create GitHub Release
