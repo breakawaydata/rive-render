@@ -336,4 +336,3 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         throw;
     }
 }
-

@@ -43,9 +43,12 @@ fi
 echo "==> Using premake5 at: $PREMAKE5"
 
 # --- Build SwiftShader on Linux so it ships next to the binary ---
+# Set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip (CI uses this — the
+# bundled software-Vulkan path is built/tested separately via its own
+# cache so the main build stays fast).
 SWIFTSHADER_LIB=""
 SWIFTSHADER_ICD=""
-if [ "$OS" = "Linux" ]; then
+if [ "$OS" = "Linux" ] && [ -z "${RIVE_RENDER_SKIP_SWIFTSHADER:-}" ]; then
     SS_BUILD="$RIVE_RUNTIME/renderer/dependencies/swiftshader/build"
     if [ ! -f "$SS_BUILD/Linux/libvk_swiftshader.so" ]; then
         echo "==> Building SwiftShader (software Vulkan for Linux)..."

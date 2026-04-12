@@ -20,8 +20,8 @@ struct HeadlessRenderer::Impl
     id<MTLBuffer> readbackBuffer = nil;
 };
 
-HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/) :
-    m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
+HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/)
+    : m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
 {
     @autoreleasepool
     {
@@ -42,12 +42,9 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*
             throw std::runtime_error("Failed to create Metal render context");
         }
 
-        auto* metalImpl =
-            m_impl->renderContext->static_impl_cast<RenderContextMetalImpl>();
+        auto* metalImpl = m_impl->renderContext->static_impl_cast<RenderContextMetalImpl>();
         m_impl->renderTarget = metalImpl->makeRenderTarget(
-            MTLPixelFormatBGRA8Unorm,
-            static_cast<uint32_t>(width),
-            static_cast<uint32_t>(height));
+            MTLPixelFormatBGRA8Unorm, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         if (!m_impl->renderTarget)
         {
             throw std::runtime_error("Failed to create Metal render target");
@@ -68,11 +65,9 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*
         }
         m_impl->renderTarget->setTargetTexture(m_impl->targetTexture);
 
-        NSUInteger byteCount =
-            static_cast<NSUInteger>(width) * static_cast<NSUInteger>(height) * 4;
-        m_impl->readbackBuffer =
-            [m_impl->gpu newBufferWithLength:byteCount
-                                     options:MTLResourceStorageModeShared];
+        NSUInteger byteCount = static_cast<NSUInteger>(width) * static_cast<NSUInteger>(height) * 4;
+        m_impl->readbackBuffer = [m_impl->gpu newBufferWithLength:byteCount
+                                                          options:MTLResourceStorageModeShared];
         if (m_impl->readbackBuffer == nil)
         {
             throw std::runtime_error("Failed to create Metal readback buffer");
@@ -82,7 +77,10 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*
 
 HeadlessRenderer::~HeadlessRenderer() = default;
 
-rive::Factory* HeadlessRenderer::factory() { return m_impl->renderContext.get(); }
+rive::Factory* HeadlessRenderer::factory()
+{
+    return m_impl->renderContext.get();
+}
 
 rive::gpu::RenderContext* HeadlessRenderer::renderContext()
 {
@@ -104,9 +102,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(ArtboardInstance* artboard,
 
         RiveRenderer renderer(m_impl->renderContext.get());
         renderer.save();
-        renderer.align(Fit::contain,
-                       Alignment::center,
-                       AABB(0, 0, m_width, m_height),
+        renderer.align(Fit::contain, Alignment::center, AABB(0, 0, m_width, m_height),
                        artboard->bounds());
         artboard->draw(&renderer);
         renderer.restore();
@@ -123,8 +119,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(ArtboardInstance* artboard,
                          sourceLevel:0
                         sourceOrigin:MTLOriginMake(0, 0, 0)
                           sourceSize:MTLSizeMake(static_cast<NSUInteger>(m_width),
-                                                 static_cast<NSUInteger>(m_height),
-                                                 1)
+                                                 static_cast<NSUInteger>(m_height), 1)
                             toBuffer:m_impl->readbackBuffer
                    destinationOffset:0
               destinationBytesPerRow:static_cast<NSUInteger>(m_width) * 4
@@ -138,8 +133,7 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(ArtboardInstance* artboard,
         const size_t w = static_cast<size_t>(m_width);
         const size_t h = static_cast<size_t>(m_height);
         pixels.resize(w * h * 4);
-        const uint8_t* contents =
-            reinterpret_cast<const uint8_t*>(m_impl->readbackBuffer.contents);
+        const uint8_t* contents = reinterpret_cast<const uint8_t*>(m_impl->readbackBuffer.contents);
         const size_t rowBytes = w * 4;
         // Flip Y and swap BGRA → RGBA.
         for (size_t y = 0; y < h; ++y)

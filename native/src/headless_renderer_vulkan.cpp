@@ -22,8 +22,8 @@ struct HeadlessRenderer::Impl
     rive::rcp<rive::gpu::RenderTargetVulkanImpl> renderTarget;
 };
 
-HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/) :
-    m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
+HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/)
+    : m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
 {
     using namespace rive_vkb;
 
@@ -71,10 +71,9 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*
         throw std::runtime_error("Failed to create headless frame synchronizer");
     }
 
-    m_impl->renderTarget =
-        vkImpl->static_impl_cast<RenderContextVulkanImpl>()->makeRenderTarget(
-            width, height, m_impl->frameSynchronizer->imageFormat(),
-            m_impl->frameSynchronizer->imageUsageFlags());
+    m_impl->renderTarget = vkImpl->static_impl_cast<RenderContextVulkanImpl>()->makeRenderTarget(
+        width, height, m_impl->frameSynchronizer->imageFormat(),
+        m_impl->frameSynchronizer->imageUsageFlags());
     if (!m_impl->renderTarget)
     {
         throw std::runtime_error("Failed to create render target");
@@ -85,7 +84,10 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*
 
 HeadlessRenderer::~HeadlessRenderer() = default;
 
-rive::Factory* HeadlessRenderer::factory() { return m_impl->renderContext.get(); }
+rive::Factory* HeadlessRenderer::factory()
+{
+    return m_impl->renderContext.get();
+}
 
 rive::gpu::RenderContext* HeadlessRenderer::renderContext()
 {
