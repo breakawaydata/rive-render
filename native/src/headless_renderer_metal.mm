@@ -20,9 +20,14 @@ struct HeadlessRenderer::Impl
     id<MTLBuffer> readbackBuffer = nil;
 };
 
-HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/)
+HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
     : m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
 {
+    // useSwiftShader is a Linux/Vulkan-only knob — on macOS we always
+    // render through the native Metal backend and there is no
+    // software-rasterizer option.
+    (void)useSwiftShader;
+
     @autoreleasepool
     {
         m_impl->gpu = MTLCreateSystemDefaultDevice();

@@ -19,39 +19,11 @@
 #include <string>
 #include <vector>
 
-#ifdef __linux__
-#include <limits.h>
-#include <unistd.h>
-#endif
-
 #include "config.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
 #include "output_video.hpp"
 #include "queue_renderer.hpp"
-
-#ifdef __linux__
-// Point the Vulkan loader at the SwiftShader ICD shipped next to the
-// binary. Must run before any rive-runtime code initializes Vulkan.
-static void enableBundledSwiftShader()
-{
-    char exePath[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len <= 0)
-    {
-        return;
-    }
-    exePath[len] = '\0';
-    std::string dir(exePath);
-    auto slash = dir.rfind('/');
-    if (slash == std::string::npos)
-    {
-        return;
-    }
-    std::string icdPath = dir.substr(0, slash) + "/vk_swiftshader_icd.json";
-    setenv("VK_ICD_FILENAMES", icdPath.c_str(), 1);
-}
-#endif
 
 static std::vector<uint8_t> readFileBytes(const std::string& path)
 {
@@ -113,13 +85,6 @@ int main(int argc, char* argv[])
 
         auto config = Config::parse(jsonStr);
         auto rivBytes = readFileBytes(config.rivFile);
-
-#ifdef __linux__
-        if (config.swiftshader)
-        {
-            enableBundledSwiftShader();
-        }
-#endif
 
         auto result = renderWithQueue(config, rivBytes);
 

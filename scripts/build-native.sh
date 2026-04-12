@@ -74,9 +74,9 @@ fi
 # --- Build rive-render ---
 cd "$BUILD_DIR"
 
-PREMAKE_BACKEND_FLAGS=()
+PREMAKE_VULKAN_FLAG=""
 if [ "$OS" = "Linux" ]; then
-    PREMAKE_BACKEND_FLAGS+=(--with_vulkan)
+    PREMAKE_VULKAN_FLAG="--with_vulkan"
 fi
 
 PREMAKE_ARCH_FLAG=""
@@ -88,7 +88,7 @@ fi
 echo "==> Running premake5 (config=$CONFIG)..."
 "$PREMAKE5" \
     --scripts="$RIVE_RUNTIME/build" \
-    "${PREMAKE_BACKEND_FLAGS[@]}" \
+    $PREMAKE_VULKAN_FLAG \
     --with-rtti \
     --with-exceptions \
     --with_rive_layout \

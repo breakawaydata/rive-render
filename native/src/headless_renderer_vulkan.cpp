@@ -1,7 +1,14 @@
 #include "headless_renderer.hpp"
 
 #include <stdexcept>
+#include <string>
 #include <vulkan/vulkan.h>
+
+#ifdef __linux__
+#include <climits>
+#include <cstdlib>
+#include <unistd.h>
+#endif
 
 #include "rive/renderer/rive_renderer.hpp"
 #include "rive/renderer/vulkan/render_context_vulkan_impl.hpp"
@@ -22,10 +29,45 @@ struct HeadlessRenderer::Impl
     rive::rcp<rive::gpu::RenderTargetVulkanImpl> renderTarget;
 };
 
-HeadlessRenderer::HeadlessRenderer(int width, int height, bool /*useSwiftShader*/)
+namespace
+{
+#ifdef __linux__
+// Point the Vulkan loader at the SwiftShader ICD shipped next to the
+// binary. Must run before rive_vk_bootstrap loads the Vulkan library.
+void enableBundledSwiftShader()
+{
+    char exePath[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len <= 0)
+    {
+        return;
+    }
+    exePath[len] = '\0';
+    std::string dir(exePath);
+    auto slash = dir.rfind('/');
+    if (slash == std::string::npos)
+    {
+        return;
+    }
+    std::string icdPath = dir.substr(0, slash) + "/vk_swiftshader_icd.json";
+    setenv("VK_ICD_FILENAMES", icdPath.c_str(), 1);
+}
+#endif
+} // namespace
+
+HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
     : m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
 {
     using namespace rive_vkb;
+
+#ifdef __linux__
+    if (useSwiftShader)
+    {
+        enableBundledSwiftShader();
+    }
+#else
+    (void)useSwiftShader;
+#endif
 
     m_impl->instance = VulkanInstance::Create(VulkanInstance::Options{
         .appName = "rive-render",
