@@ -84,22 +84,33 @@ async function main() {
     return;
   }
 
-  // On macOS, download bundled MoltenVK if not already available from Homebrew.
-  // The rive-runtime searches /opt/homebrew/lib and /usr/local/lib as fallbacks.
-  if (os.platform() === "darwin") {
-    const mvkSystemPaths = [
-      path.join(binDir, "libMoltenVK.dylib"),
-      "/opt/homebrew/lib/libMoltenVK.dylib",
-      "/usr/local/lib/libMoltenVK.dylib",
+  // On Linux, also fetch the bundled SwiftShader ICD next to the binary.
+  // The rive-render binary enables it via `"swiftshader": true` in the
+  // JSON config, which points VK_ICD_FILENAMES at the sibling json file.
+  // Users on real-GPU machines can ignore these files and use the system
+  // Vulkan driver. On macOS we render through Metal — no Vulkan fallback.
+  if (os.platform() === "linux") {
+    const arch = os.arch() === "arm64" ? "arm64" : "x64";
+    const ssAssets = [
+      {
+        remote: `libvk_swiftshader-linux-${arch}.so`,
+        local: "libvk_swiftshader.so",
+      },
+      {
+        remote: `vk_swiftshader_icd-linux-${arch}.json`,
+        local: "vk_swiftshader_icd.json",
+      },
     ];
-    if (!mvkSystemPaths.some((p) => fs.existsSync(p))) {
+    for (const asset of ssAssets) {
       try {
-        await download(`${releaseUrl}/libMoltenVK.dylib`, path.join(binDir, "libMoltenVK.dylib"));
+        await download(`${releaseUrl}/${asset.remote}`, path.join(binDir, asset.local));
       } catch (err) {
         console.warn(
-          `rive-render: Failed to download MoltenVK (${err.message}). ` +
-            `Install it via 'brew install molten-vk' if Vulkan rendering fails.`
+          `rive-render: Failed to download SwiftShader asset ${asset.remote} ` +
+            `(${err.message}). The "swiftshader": true config flag may not work until ` +
+            `these files are placed next to the rive-render binary.`
         );
+        break;
       }
     }
   }
