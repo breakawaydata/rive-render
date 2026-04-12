@@ -19,40 +19,11 @@
 #include <string>
 #include <vector>
 
-#ifdef __APPLE__
-#include <dlfcn.h>
-#include <mach-o/dyld.h>
-#endif
-
 #include "config.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
 #include "output_video.hpp"
-#ifdef RIVE_VULKAN
 #include "queue_renderer.hpp"
-#endif
-
-#ifdef __APPLE__
-// Preload MoltenVK from the binary's own directory so it's available
-// without requiring the user to set DYLD_LIBRARY_PATH or install it via
-// Homebrew. This handles the case where libMoltenVK.dylib is bundled
-// alongside the binary (as done by the rive-render npm postinstall).
-// The rive-runtime's vulkan_library.cpp has been patched at build time
-// to also search /opt/homebrew/lib and /usr/local/lib as fallbacks.
-static void preloadMoltenVK()
-{
-    char exePath[1024];
-    uint32_t size = sizeof(exePath);
-    if (_NSGetExecutablePath(exePath, &size) == 0)
-    {
-        std::string dir(exePath);
-        dir = dir.substr(0, dir.rfind('/'));
-        std::string mvkPath = dir + "/libMoltenVK.dylib";
-        if (dlopen(mvkPath.c_str(), RTLD_NOW | RTLD_GLOBAL))
-            return;
-    }
-}
-#endif
 
 static std::vector<uint8_t> readFileBytes(const std::string& path)
 {
@@ -90,16 +61,6 @@ static void outputJson(bool success, const std::string& outputPath = "", int fra
 
 int main(int argc, char* argv[])
 {
-#ifdef __APPLE__
-    preloadMoltenVK();
-#endif
-
-#ifndef RIVE_VULKAN
-    std::cerr << "ERROR: Built without Vulkan support. Cannot render." << std::endl;
-    outputJson(false, "", 0, "No Vulkan support");
-    return 1;
-#else
-
     try
     {
         // Read JSON config from stdin (or --config file)
@@ -180,5 +141,4 @@ int main(int argc, char* argv[])
         outputJson(false, "", 0, e.what());
         return 1;
     }
-#endif
 }

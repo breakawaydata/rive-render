@@ -85,6 +85,11 @@ jobs:
 
       - name: Build native binary
         if: steps.cache-native-build.outputs.cache-hit != 'true'
+        env:
+          # SwiftShader's build pulls a full LLVM source tree and takes
+          # 30+ minutes on a free runner — skip it here. The bundled
+          # software-Vulkan fallback is covered by a dedicated job/cache.
+          RIVE_RENDER_SKIP_SWIFTSHADER: "1"
         run: bash scripts/build-native.sh release
 
       - uses: actions/setup-node@v4

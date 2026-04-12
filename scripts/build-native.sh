@@ -42,49 +42,42 @@ fi
 
 echo "==> Using premake5 at: $PREMAKE5"
 
-# --- Patch rive-runtime's Vulkan library loader ---
-# Add more candidate paths so MoltenVK is found when installed via Homebrew
-# or bundled next to the executable.
-VULKAN_LIB_CPP="$RIVE_RUNTIME/renderer/rive_vk_bootstrap/src/vulkan_library.cpp"
-if [ -f "$VULKAN_LIB_CPP" ] && ! grep -q "RIVE_RENDER_MVK_PATHS" "$VULKAN_LIB_CPP"; then
-    echo "==> Patching rive-runtime vulkan_library.cpp with extra MoltenVK candidate paths..."
-    python3 - "$VULKAN_LIB_CPP" <<'PYEOF'
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    content = f.read()
-
-# Insert extra candidates after "libMoltenVK.dylib",
-old = '        "libMoltenVK.dylib",\n'
-new = (
-    '        "libMoltenVK.dylib",\n'
-    '        // RIVE_RENDER_MVK_PATHS: extra candidates for rive-render\n'
-    '        "/opt/homebrew/lib/libMoltenVK.dylib", // ARM macOS Homebrew\n'
-    '        "/usr/local/lib/libMoltenVK.dylib",    // Intel macOS Homebrew\n'
-)
-if old not in content:
-    raise SystemExit("ERROR: Could not find patch target in vulkan_library.cpp")
-content = content.replace(old, new, 1)
-with open(path, 'w') as f:
-    f.write(content)
-print("Patched vulkan_library.cpp")
-PYEOF
-fi
-
-# --- Build MoltenVK on macOS if not already built ---
-if [ "$OS" = "Darwin" ]; then
-    MOLTENVK_LIB="$RIVE_RUNTIME/renderer/dependencies/MoltenVK/Package/Release/MoltenVK/dylib/macOS/libMoltenVK.dylib"
-    if [ ! -f "$MOLTENVK_LIB" ]; then
-        echo "==> Building Rive's custom MoltenVK (required for macOS)..."
-        cd "$RIVE_RUNTIME/renderer"
-        bash make_moltenvk.sh
-        cd "$PROJECT_ROOT"
+# --- Build SwiftShader on Linux so it ships next to the binary ---
+# Set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip (CI uses this — the
+# bundled software-Vulkan path is built/tested separately via its own
+# cache so the main build stays fast).
+SWIFTSHADER_LIB=""
+SWIFTSHADER_ICD=""
+if [ "$OS" = "Linux" ] && [ -z "${RIVE_RENDER_SKIP_SWIFTSHADER:-}" ]; then
+    SS_BUILD="$RIVE_RUNTIME/renderer/dependencies/swiftshader/build"
+    if [ ! -f "$SS_BUILD/Linux/libvk_swiftshader.so" ]; then
+        echo "==> Building SwiftShader (software Vulkan for Linux)..."
+        (cd "$RIVE_RUNTIME/renderer" && bash make_swiftshader.sh)
     fi
-    echo "==> MoltenVK available at: $MOLTENVK_LIB"
+    # make_swiftshader.sh puts output under either Linux/ or the cmake
+    # build root depending on the SwiftShader version; prefer the
+    # platform subdir, fall back to the build dir itself.
+    if [ -f "$SS_BUILD/Linux/libvk_swiftshader.so" ]; then
+        SWIFTSHADER_LIB="$SS_BUILD/Linux/libvk_swiftshader.so"
+        SWIFTSHADER_ICD="$SS_BUILD/Linux/vk_swiftshader_icd.json"
+    elif [ -f "$SS_BUILD/libvk_swiftshader.so" ]; then
+        SWIFTSHADER_LIB="$SS_BUILD/libvk_swiftshader.so"
+        SWIFTSHADER_ICD="$SS_BUILD/vk_swiftshader_icd.json"
+    else
+        echo "WARN: SwiftShader build succeeded but libvk_swiftshader.so not found under $SS_BUILD"
+    fi
+    if [ -n "$SWIFTSHADER_LIB" ]; then
+        echo "==> SwiftShader available at: $SWIFTSHADER_LIB"
+    fi
 fi
 
 # --- Build rive-render ---
 cd "$BUILD_DIR"
+
+PREMAKE_VULKAN_FLAG=""
+if [ "$OS" = "Linux" ]; then
+    PREMAKE_VULKAN_FLAG="--with_vulkan"
+fi
 
 PREMAKE_ARCH_FLAG=""
 if [ -n "$TARGET_ARCH" ]; then
@@ -92,10 +85,10 @@ if [ -n "$TARGET_ARCH" ]; then
     echo "==> Cross-compiling for architecture: $TARGET_ARCH"
 fi
 
-echo "==> Running premake5 (config=$CONFIG, with_vulkan, with-rtti, with-exceptions)..."
+echo "==> Running premake5 (config=$CONFIG)..."
 "$PREMAKE5" \
     --scripts="$RIVE_RUNTIME/build" \
-    --with_vulkan \
+    $PREMAKE_VULKAN_FLAG \
     --with-rtti \
     --with-exceptions \
     --with_rive_layout \
@@ -113,6 +106,30 @@ BINARY="$BUILD_DIR/out/$CONFIG/rive_render"
 if [ -f "$BINARY" ]; then
     echo "Binary: $BINARY"
     ls -lh "$BINARY"
+
+    # Stage SwiftShader artifacts next to the binary so the runtime
+    # `--swiftshader` flag (which reads them from /proc/self/exe's
+    # directory) can pick them up.
+    if [ "$OS" = "Linux" ] && [ -n "$SWIFTSHADER_LIB" ] && [ -f "$SWIFTSHADER_LIB" ]; then
+        BIN_DIR="$(dirname "$BINARY")"
+        cp "$SWIFTSHADER_LIB" "$BIN_DIR/"
+        cp "$SWIFTSHADER_ICD" "$BIN_DIR/"
+        # Rewrite the ICD's library_path to a relative reference so the
+        # bundle is relocatable (SwiftShader's cmake bakes an absolute
+        # path by default).
+        python3 - "$BIN_DIR/vk_swiftshader_icd.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+with open(p) as f:
+    data = json.load(f)
+data["ICD"]["library_path"] = "./libvk_swiftshader.so"
+with open(p, "w") as f:
+    json.dump(data, f, indent=4)
+print(f"Rewrote {p} library_path -> ./libvk_swiftshader.so")
+PYEOF
+        echo "==> Bundled SwiftShader: $BIN_DIR/{libvk_swiftshader.so,vk_swiftshader_icd.json}"
+    fi
+
     echo ""
     echo "Example usage:"
     echo "  echo '{\"rivFile\":\"file.riv\",\"width\":800,\"height\":600,\"screenshot\":{\"path\":\"out.png\"}}' | $BINARY"

@@ -1,5 +1,3 @@
-#ifdef RIVE_VULKAN
-
 #include "queue_renderer.hpp"
 #include "headless_renderer.hpp"
 
@@ -69,7 +67,7 @@ static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int t
 QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes)
 {
     // 1. Create headless renderer
-    HeadlessRenderer headless(config.width, config.height);
+    HeadlessRenderer headless(config.width, config.height, config.swiftshader);
 
     // 2. Create queue + server
     auto queue = make_rcp<CommandQueue>();
@@ -338,5 +336,3 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         throw;
     }
 }
-
-#endif // RIVE_VULKAN
