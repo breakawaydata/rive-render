@@ -160,6 +160,13 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 else if (prop.type == "enum")
                     queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
             }
+
+            // Attach the view model instance to the state machine. Without
+            // this, the state machine reads from a default/empty view model
+            // and every setViewModelInstance* write above is silently
+            // discarded — the render falls back to the artboard's authored
+            // defaults regardless of what the caller passed.
+            queue->bindViewModelInstance(smHandle, vmHandle);
         }
 
         // 8b. Apply stateMachineInputs before any advances.
