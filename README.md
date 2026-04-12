@@ -2,7 +2,7 @@
 
 Headless renderer for [Rive](https://rive.app) animations. Generates **PNG screenshots**, **animated GIFs**, and **MP4 videos** from `.riv` files with full support for state machines, linear animations, view model data binding, and referenced assets.
 
-Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) with Vulkan for GPU-accelerated rendering including feathering and all advanced Rive features. Ships as a C++ CLI binary with a TypeScript/Node.js API.
+Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) for GPU-accelerated rendering including feathering and all advanced Rive features — Metal on macOS, Vulkan on Linux. Ships as a C++ CLI binary with a TypeScript/Node.js API.
 
 ## Features
 
@@ -14,7 +14,7 @@ Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) with 
 - **Referenced asset loading** (images, fonts)
 - **Multi-threaded rendering** via Rive's `CommandQueue`/`CommandServer` (matches the Rive iOS/Android app runtimes)
 - **Visual regression testing** with jest-image-snapshot
-- Works on **macOS** (MoltenVK) and **Linux** (native Vulkan / SwiftShader)
+- Runs natively on **macOS** (Metal) and **Linux** (Vulkan, with optional bundled SwiftShader for headless/CI environments)
 
 ## Quick Start
 
@@ -292,10 +292,9 @@ cd rive-render
 # Clone rive-runtime
 git clone --depth 1 https://github.com/rive-app/rive-runtime.git deps/rive-runtime
 
-# Build MoltenVK (macOS only, ~5 minutes)
-cd deps/rive-runtime/renderer && bash make_moltenvk.sh && cd ../../..
-
 # Build the native binary
+# (on Linux this also builds SwiftShader the first time, ~15-20 min;
+#  set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip)
 bash scripts/build-native.sh
 
 # Install TypeScript dependencies
@@ -389,9 +388,12 @@ C++ CLI binary (rive_render)
     |        artboard, state machine, view model, assets). Processes
     |        commands FIFO and executes per-frame draw callbacks.
     |
-    +-- Rive PLS Renderer (Vulkan -- full feathering support)
-    |     +-- VulkanHeadlessFrameSynchronizer (offscreen rendering)
-    |     +-- MoltenVK (macOS) / native Vulkan (Linux)
+    +-- Rive PLS Renderer -- full feathering support
+    |     +-- macOS: Metal backend
+    |     |     +-- offscreen MTLTexture + MTLBuffer blit readback
+    |     +-- Linux: Vulkan backend
+    |           +-- VulkanHeadlessFrameSynchronizer (offscreen rendering)
+    |           +-- real GPU driver, or bundled SwiftShader via `"swiftshader":true`
     |
     +-- Output encoders
           +-- PNG (stb_image_write)
@@ -413,10 +415,12 @@ rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`Comman
 rive-render/
 +-- native/                     C++ renderer binary
 |   +-- src/
-|   |   +-- main.cpp            Entry point, JSON config, orchestration
-|   |   +-- queue_renderer.*    CommandQueue driver: assets, artboard, frames
-|   |   +-- headless_renderer.* Offscreen Vulkan context + per-frame draw
-|   |   +-- config.*            JSON config parsing
+|   |   +-- main.cpp                     Entry point, JSON config, orchestration
+|   |   +-- queue_renderer.*             CommandQueue driver: assets, artboard, frames
+|   |   +-- headless_renderer.hpp        Backend-agnostic offscreen renderer API
+|   |   +-- headless_renderer_metal.mm   macOS Metal backend
+|   |   +-- headless_renderer_vulkan.cpp Linux Vulkan / SwiftShader backend
+|   |   +-- config.*                     JSON config parsing
 |   |   +-- output_png.*        PNG encoding (stb_image_write)
 |   |   +-- output_gif.*        GIF via ffmpeg
 |   |   +-- output_video.*      MP4/WebM via ffmpeg
