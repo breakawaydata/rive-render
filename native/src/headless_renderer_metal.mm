@@ -140,10 +140,12 @@ std::vector<uint8_t> HeadlessRenderer::renderFrame(ArtboardInstance* artboard,
         pixels.resize(w * h * 4);
         const uint8_t* contents = reinterpret_cast<const uint8_t*>(m_impl->readbackBuffer.contents);
         const size_t rowBytes = w * 4;
-        // Flip Y and swap BGRA → RGBA.
+        // Swap BGRA → RGBA. Metal's origin is top-left, so rows are
+        // already in the correct top-down order (unlike Vulkan, which
+        // needs a Y-flip).
         for (size_t y = 0; y < h; ++y)
         {
-            const uint8_t* srcRow = &contents[(h - y - 1) * rowBytes];
+            const uint8_t* srcRow = &contents[y * rowBytes];
             uint8_t* dstRow = &pixels[y * rowBytes];
             for (size_t x = 0; x < rowBytes; x += 4)
             {
