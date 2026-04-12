@@ -43,20 +43,38 @@ fi
 echo "==> Using premake5 at: $PREMAKE5"
 
 # --- Build SwiftShader on Linux so it ships next to the binary ---
-# Set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip (CI uses this — the
-# bundled software-Vulkan path is built/tested separately via its own
-# cache so the main build stays fast).
+# Set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip. CI uses this in pull-
+# request workflows so the main build stays fast; the release workflow
+# actually builds SwiftShader from source and bundles it next to the
+# binary.
+#
+# We don't call rive-runtime's `make_swiftshader.sh` because that
+# script runs `cmake --build . --parallel` with no job count, which
+# CMake translates to bare `make -j` (unlimited parallelism). On a
+# 16 GB runner that OOM-kills cc1plus halfway through llvm-10. Build
+# in place so we can pass an explicit -j and cap memory pressure.
 SWIFTSHADER_LIB=""
 SWIFTSHADER_ICD=""
 if [ "$OS" = "Linux" ] && [ -z "${RIVE_RENDER_SKIP_SWIFTSHADER:-}" ]; then
-    SS_BUILD="$RIVE_RUNTIME/renderer/dependencies/swiftshader/build"
-    if [ ! -f "$SS_BUILD/Linux/libvk_swiftshader.so" ]; then
-        echo "==> Building SwiftShader (software Vulkan for Linux)..."
-        (cd "$RIVE_RUNTIME/renderer" && bash make_swiftshader.sh)
+    SS_SRC="$RIVE_RUNTIME/renderer/dependencies/swiftshader"
+    SS_BUILD="$SS_SRC/build"
+    SWIFTSHADER_PARALLEL="${SWIFTSHADER_PARALLEL:-2}"
+    if [ ! -f "$SS_BUILD/Linux/libvk_swiftshader.so" ] && \
+       [ ! -f "$SS_BUILD/libvk_swiftshader.so" ]; then
+        echo "==> Building SwiftShader (software Vulkan for Linux, -j$SWIFTSHADER_PARALLEL)..."
+        mkdir -p "$RIVE_RUNTIME/renderer/dependencies"
+        if [ ! -d "$SS_SRC" ]; then
+            git clone --depth 1 https://github.com/google/swiftshader.git "$SS_SRC"
+        fi
+        mkdir -p "$SS_BUILD"
+        (
+            cd "$SS_BUILD"
+            cmake ..
+            cmake --build . --parallel "$SWIFTSHADER_PARALLEL"
+        )
     fi
-    # make_swiftshader.sh puts output under either Linux/ or the cmake
-    # build root depending on the SwiftShader version; prefer the
-    # platform subdir, fall back to the build dir itself.
+    # SwiftShader's CMake puts output under either Linux/ or the build
+    # root depending on the version; prefer the platform subdir.
     if [ -f "$SS_BUILD/Linux/libvk_swiftshader.so" ]; then
         SWIFTSHADER_LIB="$SS_BUILD/Linux/libvk_swiftshader.so"
         SWIFTSHADER_ICD="$SS_BUILD/Linux/vk_swiftshader_icd.json"
@@ -64,7 +82,7 @@ if [ "$OS" = "Linux" ] && [ -z "${RIVE_RENDER_SKIP_SWIFTSHADER:-}" ]; then
         SWIFTSHADER_LIB="$SS_BUILD/libvk_swiftshader.so"
         SWIFTSHADER_ICD="$SS_BUILD/vk_swiftshader_icd.json"
     else
-        echo "WARN: SwiftShader build succeeded but libvk_swiftshader.so not found under $SS_BUILD"
+        echo "WARN: SwiftShader build completed but libvk_swiftshader.so not found under $SS_BUILD"
     fi
     if [ -n "$SWIFTSHADER_LIB" ]; then
         echo "==> SwiftShader available at: $SWIFTSHADER_LIB"

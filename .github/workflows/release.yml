@@ -66,10 +66,10 @@ jobs:
 
       - name: Build native binary
         env:
-          # Cap cmake parallelism for the SwiftShader sub-build —
-          # compiling llvm-10 with -j$(nproc) on a 4-core / 16 GB
-          # runner OOM-kills cc1plus mid-build. -j2 fits.
-          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          # Cap SwiftShader's llvm-10 compile parallelism — at -j$(nproc)
+          # on a 4-core / 16 GB runner cc1plus OOMs halfway through.
+          # -j2 fits comfortably and build-native.sh reads this var.
+          SWIFTSHADER_PARALLEL: 2
         run: bash scripts/build-native.sh release ${{ matrix.target_arch }}
 
       - name: Upload binary artifact
