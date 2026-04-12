@@ -109,6 +109,7 @@ echo "==> Running premake5 (config=$CONFIG)..."
     $PREMAKE_VULKAN_FLAG \
     --with-rtti \
     --with-exceptions \
+    --with_rive_text \
     --with_rive_layout \
     --config="$CONFIG" \
     --out="out/$CONFIG" \
