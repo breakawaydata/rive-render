@@ -141,16 +141,17 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             // it is empty, infer from the artboard (overloads that take
             // ArtboardHandle). Within each branch, use the named-instance
             // overload when an instance name is provided, otherwise create
-            // a blank instance with the VM's default values.
+            // a default instance (mirrors the old direct path's
+            // file->createDefaultViewModelInstance).
             auto vmHandle = !config.viewModelData.viewModel.empty()
                                 ? (!config.viewModelData.instance.empty()
                                        ? queue->instantiateViewModelInstanceNamed(
                                              fileHandle, config.viewModelData.viewModel,
                                              config.viewModelData.instance)
-                                       : queue->instantiateBlankViewModelInstance(
+                                       : queue->instantiateDefaultViewModelInstance(
                                              fileHandle, config.viewModelData.viewModel))
                             : config.viewModelData.instance.empty()
-                                ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
+                                ? queue->instantiateDefaultViewModelInstance(fileHandle, abHandle)
                                 : queue->instantiateViewModelInstanceNamed(
                                       fileHandle, abHandle, config.viewModelData.instance);
 
@@ -169,11 +170,10 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
             }
 
-            // Attach the view model instance to the state machine. Without
-            // this, the state machine reads from a default/empty view model
-            // and every setViewModelInstance* write above is silently
-            // discarded — the render falls back to the artboard's authored
-            // defaults regardless of what the caller passed.
+            // Attach the view model instance to the state machine. This
+            // also sets the artboard's data context internally (via
+            // StateMachineInstance::bindViewModelInstance which calls
+            // m_artboardInstance->internalDataContext).
             queue->bindViewModelInstance(smHandle, vmHandle);
         }
 
