@@ -134,17 +134,25 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         // 8. Bind view model data (if provided)
         if (!config.viewModelData.properties.empty())
         {
-            // Use named ViewModel if specified, otherwise default
-            auto vmHandle =
-                !config.viewModelData.viewModel.empty()
-                    ? (!config.viewModelData.instance.empty()
-                           ? queue->instantiateViewModelInstanceNamed(fileHandle, abHandle,
-                                                                      config.viewModelData.instance)
-                           : queue->instantiateBlankViewModelInstance(fileHandle, abHandle))
-                : config.viewModelData.instance.empty()
-                    ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
-                    : queue->instantiateViewModelInstanceNamed(fileHandle, abHandle,
-                                                               config.viewModelData.instance);
+            // Instantiate a view model instance.
+            //
+            // When viewModel is specified, look up the VM by name in the
+            // file (overloads that take std::string viewModelName). When
+            // it is empty, infer from the artboard (overloads that take
+            // ArtboardHandle). Within each branch, use the named-instance
+            // overload when an instance name is provided, otherwise create
+            // a blank instance with the VM's default values.
+            auto vmHandle = !config.viewModelData.viewModel.empty()
+                                ? (!config.viewModelData.instance.empty()
+                                       ? queue->instantiateViewModelInstanceNamed(
+                                             fileHandle, config.viewModelData.viewModel,
+                                             config.viewModelData.instance)
+                                       : queue->instantiateBlankViewModelInstance(
+                                             fileHandle, config.viewModelData.viewModel))
+                            : config.viewModelData.instance.empty()
+                                ? queue->instantiateBlankViewModelInstance(fileHandle, abHandle)
+                                : queue->instantiateViewModelInstanceNamed(
+                                      fileHandle, abHandle, config.viewModelData.instance);
 
             // Set properties
             for (auto& [path, prop] : config.viewModelData.properties)
@@ -160,6 +168,13 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 else if (prop.type == "enum")
                     queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
             }
+
+            // Attach the view model instance to the state machine. Without
+            // this, the state machine reads from a default/empty view model
+            // and every setViewModelInstance* write above is silently
+            // discarded — the render falls back to the artboard's authored
+            // defaults regardless of what the caller passed.
+            queue->bindViewModelInstance(smHandle, vmHandle);
         }
 
         // 8b. Apply stateMachineInputs before any advances.

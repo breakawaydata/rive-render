@@ -10,7 +10,7 @@ import {
 import { resolve, join } from "path";
 import { execSync } from "child_process";
 import { toMatchImageSnapshot } from "jest-image-snapshot";
-import { RiveRenderer, RiveRenderError } from "../index";
+import { RiveRenderer, RiveRenderError, type PropertyValue } from "../index";
 
 expect.extend({ toMatchImageSnapshot });
 
@@ -18,6 +18,7 @@ const FIXTURES = resolve(__dirname, "..", "..", "..", "test", "fixtures");
 const BASKETBALL_RIV = resolve(FIXTURES, "basketball.riv"); // uses LinearAnimation
 const STATEMACHINE_RIV = resolve(FIXTURES, "teststatemachine.riv"); // uses StateMachine
 const ASSET_LOAD_CHECK_RIV = resolve(FIXTURES, "asset_load_check.riv"); // has embedded + referenced asset slots
+const DATA_BINDING_RIV = resolve(FIXTURES, "data_binding_test.riv"); // artboard-1 has width/rotation/color/text/orient bound props
 const TMP = "/tmp/rive-snapshot-work";
 
 // Reference files saved in repo (images, gifs, mp4s)
@@ -497,6 +498,118 @@ describe("Asset Loading", () => {
   // PNG screenshot tests cover the referenced-asset loading path; MP4
   // encoding itself is still exercised by the basketball/statemachine mp4
   // tests, which do reproduce bit-exactly.
+});
+
+// ─── View model data binding (data_binding_test.riv) ───
+//
+// data_binding_test.riv's "artboard-1" has a rectangle, a rotated shape, a
+// text run, and a follow-path constraint whose width / rotation / fill color /
+// text / orient properties are bound to a view model. Setting those
+// properties must visibly change the rendered output.
+//
+// Regression guard for the CommandQueue refactor: `setViewModelInstance*`
+// writes are no-ops unless the instance is also bound to the state machine
+// via `bindViewModelInstance`. Without the bind, each render below would
+// fall back to the authored defaults and every "differs from baseline"
+// assertion would fail with equal buffers.
+
+describe("View model data binding", () => {
+  const width = 300;
+  const height = 300;
+  const artboard = "artboard-1";
+
+  async function renderWithProperties(
+    properties: Record<string, PropertyValue>
+  ): Promise<Buffer> {
+    const tmp = `${TMP}/vm-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+    await cli.render({
+      rivFile: DATA_BINDING_RIV,
+      width,
+      height,
+      artboard,
+      screenshot: { path: tmp, timestamp: 0 },
+      viewModelData: { properties },
+    });
+    const buf = readFileSync(tmp);
+    require("fs").unlinkSync(tmp);
+    return buf;
+  }
+
+  // Baseline = render with no viewModelData at all. The `if
+  // (properties.empty())` guard in queue_renderer.cpp skips VM
+  // instantiation entirely, so the artboard renders with its authored
+  // defaults. Every property-changing test below should differ from this.
+  async function renderBaseline(): Promise<Buffer> {
+    const tmp = `${TMP}/vm-baseline-${Date.now()}.png`;
+    await cli.render({
+      rivFile: DATA_BINDING_RIV,
+      width,
+      height,
+      artboard,
+      screenshot: { path: tmp, timestamp: 0 },
+    });
+    const buf = readFileSync(tmp);
+    require("fs").unlinkSync(tmp);
+    return buf;
+  }
+
+  it("number property changes render (width: 100 -> 250)", async () => {
+    const baseline = await renderBaseline();
+    const modified = await renderWithProperties({
+      width: { type: "number", value: 250 },
+    });
+    expect(modified.equals(baseline)).toBe(false);
+  });
+
+  it("color property changes render (red -> green)", async () => {
+    const baseline = await renderBaseline();
+    const modified = await renderWithProperties({
+      color: { type: "color", value: "#00ff00" },
+    });
+    expect(modified.equals(baseline)).toBe(false);
+  });
+
+  it("string property changes render ('bound text' -> 'regression guard')", async () => {
+    const baseline = await renderBaseline();
+    const modified = await renderWithProperties({
+      text: { type: "string", value: "regression guard" },
+    });
+    expect(modified.equals(baseline)).toBe(false);
+  });
+
+  it("boolean property changes render (orient false -> true)", async () => {
+    const baseline = await renderBaseline();
+    const modified = await renderWithProperties({
+      orient: { type: "boolean", value: true },
+    });
+    expect(modified.equals(baseline)).toBe(false);
+  });
+
+  it("different property values produce different renders", async () => {
+    // Two non-baseline renders with different numeric widths — guards
+    // against a degenerate fix that applies *something* (e.g. a fixed
+    // override) but still ignores the caller's value.
+    const a = await renderWithProperties({
+      width: { type: "number", value: 80 },
+    });
+    const b = await renderWithProperties({
+      width: { type: "number", value: 320 },
+    });
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it("same property value produces identical renders", async () => {
+    // Sanity check that the render pipeline is deterministic for the
+    // VM-bound case. If this ever flakes, the binding path itself is
+    // reintroducing nondeterminism — a real regression.
+    const a = await renderWithProperties({
+      width: { type: "number", value: 175 },
+    });
+    const b = await renderWithProperties({
+      width: { type: "number", value: 175 },
+    });
+    expect(a.equals(b)).toBe(true);
+  });
 });
 
 // ─── Error handling ───
