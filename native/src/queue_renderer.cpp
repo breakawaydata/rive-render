@@ -13,10 +13,12 @@
 #include "rive/animation/state_machine_input_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
 #include "rive/artboard.hpp"
+#include "rive/assets/font_asset.hpp"
 #include "rive/assets/image_asset.hpp"
 #include "rive/command_queue.hpp"
 #include "rive/command_server.hpp"
 #include "rive/file.hpp"
+#include "rive/simple_array.hpp"
 
 using namespace rive;
 
@@ -139,7 +141,7 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         // loaded file's assets on the server thread and directly assigning
         // decoded images/fonts to any asset whose base name matches a
         // config key that was not already resolved.
-        if (!decodedImages.empty() || !config.assets.fonts.empty())
+        if (!decodedImages.empty())
         {
             // Build lookup: baseName -> decoded handle (images)
             std::map<std::string, RenderImageHandle> imageByBaseName;
@@ -168,28 +170,21 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     auto* file = srv->getFile(fileHandle);
                     if (!file)
                         return;
-
                     auto assets = file->assets();
                     for (auto& assetRef : assets)
                     {
                         auto* asset = assetRef.get();
                         if (!asset || !asset->is<ImageAsset>())
                             continue;
-
                         auto* imageAsset = asset->as<ImageAsset>();
-                        // Skip if already resolved (has a render image).
                         if (imageAsset->renderImage() != nullptr)
                             continue;
-
-                        // Try matching by base name (asset name without ID).
                         auto itr = imageByBaseName.find(asset->name());
                         if (itr != imageByBaseName.end())
                         {
                             auto* renderImage = srv->getImage(itr->second);
                             if (renderImage)
-                            {
                                 imageAsset->renderImage(ref_rcp(renderImage));
-                            }
                         }
                     }
                 });
@@ -257,22 +252,19 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             // the artboard data context internally).
             queue->bindViewModelInstance(smHandle, vmHandle);
 
-            // Fallback for artboards with no ViewModel linked directly
-            // (e.g. cropped/nested artboards that share their parent's
-            // VM). When instantiateDefaultViewModelInstance fails for
-            // such artboards, the server produces a null VM instance
-            // and all set*/bind calls above silently no-op. Detect
-            // this and retry using the file's first available ViewModel,
-            // applying all properties directly on the server thread.
+            // Direct property application on the server thread.
+            // The queue-based set* commands above work when the artboard's
+            // own VM has matching properties. But some artboards (e.g.
+            // cropped wrappers around a "Sport Card" nested artboard) have
+            // a different VM schema — the artboard VM might lack properties
+            // like firstName/lastName that exist on the file-level VM.
+            // To handle both cases, always create an instance from the
+            // file's first VM, set all properties on it directly, and
+            // bind it. This ensures all properties reach the artboard
+            // regardless of which VM schema it was originally linked to.
             queue->runOnce(
-                [fileHandle, abHandle, smHandle, vmHandle, &config,
-                 &decodedImages](CommandServer* srv)
+                [fileHandle, abHandle, smHandle, &config](CommandServer* srv)
                 {
-                    if (srv->getViewModelInstance(vmHandle) != nullptr)
-                    {
-                        return;
-                    }
-
                     auto* file = srv->getFile(fileHandle);
                     if (!file || file->viewModelCount() == 0)
                         return;
@@ -286,7 +278,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (!inst)
                         return;
 
-                    // Set all properties on the runtime instance
                     for (auto& [path, prop] : config.viewModelData.properties)
                     {
                         if (prop.type == "string")
@@ -316,13 +307,28 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                         }
                     }
 
-                    // Bind to state machine + artboard
                     auto* sm = srv->getStateMachineInstance(smHandle);
                     if (sm)
                         sm->bindViewModelInstance(inst->instance());
                     auto* artboard = srv->getArtboardInstance(abHandle);
                     if (artboard)
                         artboard->bindViewModelInstance(inst->instance());
+
+                    // Force multiple advance cycles so data binds
+                    // propagate through nested artboards. The first
+                    // advance instantiates nested artboard components
+                    // and relays the data context. The second advance
+                    // processes the dirty data binds inside the nested
+                    // artboard (e.g. text runs reading firstName/
+                    // lastName from the VM). Without both, nested text
+                    // renders empty.
+                    for (int i = 0; i < 2; i++)
+                    {
+                        if (sm)
+                            sm->advanceAndApply(0.0f);
+                        else if (artboard)
+                            artboard->advance(0.0f);
+                    }
                 });
         }
 
@@ -453,6 +459,116 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 queue->runOnce([advanceScene, frameDt](CommandServer* srv)
                                { advanceScene(srv, frameDt); });
             }
+        }
+
+        // Post-warmup pass (only when VM data or assets are involved).
+        if (!config.viewModelData.properties.empty() || !decodedImages.empty())
+        {
+            auto* factory = headless.factory();
+            queue->runOnce(
+                [fileHandle, abHandle, smHandle, &config, factory](CommandServer* srv)
+                {
+                    auto* file = srv->getFile(fileHandle);
+                    if (!file)
+                        return;
+
+                    // Download CDN-hosted fonts
+                    if (factory)
+                    {
+                        auto assets = file->assets();
+                        for (auto& assetRef : assets)
+                        {
+                            auto* asset = assetRef.get();
+                            if (!asset || !asset->is<FontAsset>())
+                                continue;
+                            auto* fontAsset = asset->as<FontAsset>();
+                            if (fontAsset->font() != nullptr)
+                                continue;
+                            auto cdnBase = fontAsset->cdnBaseUrl();
+                            auto cdnUuid = fontAsset->cdnUuidStr();
+                            if (cdnBase.empty() || cdnUuid.empty())
+                                continue;
+                            std::string url = cdnBase;
+                            if (!url.empty() && url.back() != '/')
+                                url += '/';
+                            url += cdnUuid;
+                            std::string cmd = "curl -sL '" + url + "'";
+                            FILE* pipe = popen(cmd.c_str(), "r");
+                            if (!pipe)
+                                continue;
+                            std::vector<uint8_t> fontData;
+                            uint8_t buf[8192];
+                            size_t n;
+                            while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0)
+                                fontData.insert(fontData.end(), buf, buf + n);
+                            pclose(pipe);
+                            if (fontData.size() > 100)
+                            {
+                                SimpleArray<uint8_t> arr(fontData.data(), fontData.size());
+                                fontAsset->decode(arr, factory);
+                            }
+                        }
+                    }
+
+                    if (file->viewModelCount() == 0)
+                        return;
+
+                    auto* rawVM = file->viewModel(0);
+                    auto* viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    if (!viewModelRuntime)
+                        return;
+
+                    auto inst = viewModelRuntime->createInstance();
+                    if (!inst)
+                        return;
+
+                    for (auto& [path, prop] : config.viewModelData.properties)
+                    {
+                        if (prop.type == "string")
+                        {
+                            auto* p = inst->propertyString(path);
+                            if (p)
+                                p->value(prop.stringValue);
+                        }
+                        else if (prop.type == "number")
+                        {
+                            if (auto* p = inst->propertyNumber(path))
+                                p->value(prop.numberValue);
+                        }
+                        else if (prop.type == "boolean")
+                        {
+                            if (auto* p = inst->propertyBoolean(path))
+                                p->value(prop.boolValue);
+                        }
+                        else if (prop.type == "color")
+                        {
+                            if (auto* p = inst->propertyColor(path))
+                                p->value(static_cast<int>(prop.colorValue));
+                        }
+                        else if (prop.type == "enum")
+                        {
+                            if (auto* p = inst->propertyEnum(path))
+                                p->value(prop.stringValue);
+                        }
+                    }
+
+                    auto* sm = srv->getStateMachineInstance(smHandle);
+                    if (sm)
+                        sm->bindViewModelInstance(inst->instance());
+                    auto* artboard = srv->getArtboardInstance(abHandle);
+                    if (artboard)
+                        artboard->bindViewModelInstance(inst->instance());
+
+                    // Two advances: first propagates data context to nested
+                    // artboards, second processes data binds inside them.
+                    for (int i = 0; i < 2; i++)
+                    {
+                        if (sm)
+                            sm->advanceAndApply(0.0f);
+                        else if (artboard)
+                            artboard->advance(0.0f);
+                    }
+                });
         }
 
         // Per-frame render loop. For screenshots this executes exactly once
