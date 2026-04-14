@@ -34,6 +34,37 @@ static std::vector<uint8_t> readAssetFile(const std::string& path)
     return bytes;
 }
 
+// Fetch bytes from a URL via curl. Returns empty on failure.
+static std::vector<uint8_t> fetchUrl(const std::string& url)
+{
+    std::string cmd = "curl -sL '" + url + "'";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe)
+        return {};
+    std::vector<uint8_t> data;
+    uint8_t buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0)
+        data.insert(data.end(), buf, buf + n);
+    pclose(pipe);
+    return data;
+}
+
+// Build a RiveCDN URL from a FileAsset's cdnBaseUrl + cdnUuidStr.
+// Returns empty string if the asset has no CDN reference.
+static std::string cdnUrlFor(rive::FileAsset* asset)
+{
+    auto cdnBase = asset->cdnBaseUrl();
+    auto cdnUuid = asset->cdnUuidStr();
+    if (cdnBase.empty() || cdnUuid.empty())
+        return {};
+    std::string url = cdnBase;
+    if (url.back() != '/')
+        url += '/';
+    url += cdnUuid;
+    return url;
+}
+
 // File listener to know when loading completes
 class QueueFileListener : public CommandQueue::FileListener
 {
@@ -461,8 +492,11 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             }
         }
 
-        // Post-warmup pass (only when VM data or assets are involved).
-        if (!config.viewModelData.properties.empty() || !decodedImages.empty())
+        // Post-warmup pass: download any CDN-hosted assets the file
+        // references, then (optionally) bind view model data. Always runs —
+        // we can't know from config alone whether the .riv references CDN
+        // assets, and the callback is a cheap no-op when there's nothing to
+        // do.
         {
             auto* factory = headless.factory();
             queue->runOnce(
@@ -472,43 +506,55 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (!file)
                         return;
 
-                    // Download CDN-hosted fonts
+                    // Download CDN-hosted fonts and images.
                     if (factory)
                     {
                         auto assets = file->assets();
                         for (auto& assetRef : assets)
                         {
                             auto* asset = assetRef.get();
-                            if (!asset || !asset->is<FontAsset>())
+                            if (!asset)
                                 continue;
-                            auto* fontAsset = asset->as<FontAsset>();
-                            if (fontAsset->font() != nullptr)
-                                continue;
-                            auto cdnBase = fontAsset->cdnBaseUrl();
-                            auto cdnUuid = fontAsset->cdnUuidStr();
-                            if (cdnBase.empty() || cdnUuid.empty())
-                                continue;
-                            std::string url = cdnBase;
-                            if (!url.empty() && url.back() != '/')
-                                url += '/';
-                            url += cdnUuid;
-                            std::string cmd = "curl -sL '" + url + "'";
-                            FILE* pipe = popen(cmd.c_str(), "r");
-                            if (!pipe)
-                                continue;
-                            std::vector<uint8_t> fontData;
-                            uint8_t buf[8192];
-                            size_t n;
-                            while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0)
-                                fontData.insert(fontData.end(), buf, buf + n);
-                            pclose(pipe);
-                            if (fontData.size() > 100)
+                            if (asset->is<FontAsset>())
                             {
-                                SimpleArray<uint8_t> arr(fontData.data(), fontData.size());
-                                fontAsset->decode(arr, factory);
+                                auto* fontAsset = asset->as<FontAsset>();
+                                if (fontAsset->font() != nullptr)
+                                    continue;
+                                auto url = cdnUrlFor(fontAsset);
+                                if (url.empty())
+                                    continue;
+                                auto bytes = fetchUrl(url);
+                                if (bytes.size() > 100)
+                                {
+                                    SimpleArray<uint8_t> arr(bytes.data(), bytes.size());
+                                    fontAsset->decode(arr, factory);
+                                }
+                            }
+                            else if (asset->is<ImageAsset>())
+                            {
+                                auto* imageAsset = asset->as<ImageAsset>();
+                                if (imageAsset->renderImage() != nullptr)
+                                    continue;
+                                auto url = cdnUrlFor(imageAsset);
+                                if (url.empty())
+                                    continue;
+                                auto bytes = fetchUrl(url);
+                                if (bytes.size() > 100)
+                                {
+                                    SimpleArray<uint8_t> arr(bytes.data(), bytes.size());
+                                    imageAsset->decode(arr, factory);
+                                }
                             }
                         }
                     }
+
+                    // Only bind a VM instance when the caller supplied data
+                    // to apply. Binding a default VM instance when no props
+                    // are set can change how the artboard renders vs. its
+                    // authored defaults — which regression tests rely on as
+                    // the baseline.
+                    if (config.viewModelData.properties.empty())
+                        return;
 
                     if (file->viewModelCount() == 0)
                         return;
