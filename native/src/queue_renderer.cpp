@@ -548,6 +548,14 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                         }
                     }
 
+                    // Only bind a VM instance when the caller supplied data
+                    // to apply. Binding a default VM instance when no props
+                    // are set can change how the artboard renders vs. its
+                    // authored defaults — which regression tests rely on as
+                    // the baseline.
+                    if (config.viewModelData.properties.empty())
+                        return;
+
                     if (file->viewModelCount() == 0)
                         return;
 
