@@ -41,6 +41,10 @@ do
         'rive_harfbuzz',
         'rive_sheenbidi',
         'rive_yoga',
+        -- Luau VM (Rive's embedded script engine). Required so .riv files
+        -- that use the Rive scripting feature actually execute their logic
+        -- at render time instead of being parsed-but-inert.
+        'luau_vm',
     })
 
     filter({ 'options:not no_rive_png' })

@@ -111,6 +111,7 @@ echo "==> Running premake5 (config=$CONFIG)..."
     --with-exceptions \
     --with_rive_text \
     --with_rive_layout \
+    --with_rive_scripting \
     --config="$CONFIG" \
     --out="out/$CONFIG" \
     $PREMAKE_ARCH_FLAG \
