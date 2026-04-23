@@ -105,12 +105,22 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
     // 1. Create headless renderer
     HeadlessRenderer headless(config.width, config.height, config.swiftshader);
 
-    // 2. Create queue + server
+    // 2. Create queue + server.
+    //
+    // Heap-allocated and intentionally leaked: ~CommandServer() walks the live
+    // artboard graph via rive-runtime's destructor chain, which null-derefs on
+    // some .riv files that contain a NestedArtboard with ScriptInputs. The
+    // render itself succeeds (frames are captured), but the crash during
+    // teardown means the caller never gets to write the PNG.
+    //
+    // This binary is short-lived — exit() reclaims the memory — so the leak
+    // is strictly bounded. If rive-runtime fixes the teardown bug upstream
+    // this can revert to stack allocation.
     auto queue = make_rcp<CommandQueue>();
-    CommandServer server(queue, headless.renderContext());
+    auto* server = new CommandServer(queue, headless.renderContext());
 
     // 3. Start server on background thread
-    std::thread serverThread([&server]() { server.serveUntilDisconnect(); });
+    std::thread serverThread([server]() { server->serveUntilDisconnect(); });
 
     // CommandFileAssetLoader matches by FileAsset::uniqueName(), which is the
     // base name plus asset id with the extension stripped (see
