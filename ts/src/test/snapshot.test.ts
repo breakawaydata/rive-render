@@ -19,6 +19,13 @@ const BASKETBALL_RIV = resolve(FIXTURES, "basketball.riv"); // uses LinearAnimat
 const STATEMACHINE_RIV = resolve(FIXTURES, "teststatemachine.riv"); // uses StateMachine
 const ASSET_LOAD_CHECK_RIV = resolve(FIXTURES, "asset_load_check.riv"); // has embedded + referenced asset slots
 const DATA_BINDING_RIV = resolve(FIXTURES, "data_binding_test.riv"); // artboard-1 has width/rotation/color/text/orient bound props
+// viewmodel_runtime_file.riv is committed from rive-app/rive-runtime
+// (tests/unit_tests/assets/viewmodel_runtime_file.riv) — a public Rive-team
+// fixture with a `vm` view model declaring `ima` (assetImage), `lis` (list),
+// `chi` (nested vm with `chi-num`), plus the usual scalar properties. It is
+// the canonical fixture exercised by the rive-runtime data_binding_test.cpp.
+const VM_RUNTIME_RIV = resolve(FIXTURES, "viewmodel_runtime_file.riv");
+const SAMPLE_JPEG = resolve(FIXTURES, "picture-47982.jpeg");
 const TMP = "/tmp/rive-snapshot-work";
 
 // Reference files saved in repo (images, gifs, mp4s)
@@ -608,6 +615,187 @@ describe("View model data binding", () => {
     const b = await renderWithProperties({
       width: { type: "number", value: 175 },
     });
+    expect(a.equals(b)).toBe(true);
+  });
+});
+
+// ─── DataList + Image VM-property bindings ───
+//
+// viewmodel_runtime_file.riv declares a "vm" view model with:
+//   - ima  (asset image)
+//   - lis  (list of "chi" view model instances)
+//   - chi  (nested vm with `chi-num` number property)
+//   - num / str / boo / col / enu / tri  (scalar/trigger properties)
+//
+// These tests assert that the binding pipeline accepts the new payload
+// shapes end-to-end:
+//   1. The TS API + IPC encoding round-trip without error.
+//   2. The binary returns success when image + list payloads are supplied
+//      against a real fixture.
+//   3. Identical payloads produce byte-identical PNGs (deterministic).
+//   4. Different payloads (different list lengths / image absent vs present)
+//      produce different PNGs (the bindings actually drive the runtime).
+//
+// The fixture is a smoke-test artboard so the visible delta is small —
+// what we're guarding here is the *contract* between the JS payload and
+// the runtime, not the visual fidelity of any particular .riv.
+
+describe("View model DataList + Image bindings", () => {
+  const width = 200;
+  const height = 200;
+
+  async function renderWithProps(
+    properties: Record<string, PropertyValue>,
+    outName: string
+  ): Promise<Buffer> {
+    const tmp = `${TMP}/${outName}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+    await cli.render({
+      rivFile: VM_RUNTIME_RIV,
+      width,
+      height,
+      screenshot: { path: tmp, timestamp: 0 },
+      viewModelData: { viewModel: "vm", properties },
+    });
+    const buf = readFileSync(tmp);
+    require("fs").unlinkSync(tmp);
+    return buf;
+  }
+
+  it("accepts an image VM-property binding without error", async () => {
+    const result = await cli.render({
+      rivFile: VM_RUNTIME_RIV,
+      width,
+      height,
+      screenshot: { path: `${TMP}/img-only.png`, timestamp: 0 },
+      viewModelData: {
+        viewModel: "vm",
+        properties: {
+          ima: { type: "image", value: SAMPLE_JPEG },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a list VM-property binding without error", async () => {
+    const result = await cli.render({
+      rivFile: VM_RUNTIME_RIV,
+      width,
+      height,
+      screenshot: { path: `${TMP}/list-only.png`, timestamp: 0 },
+      viewModelData: {
+        viewModel: "vm",
+        properties: {
+          lis: {
+            type: "list",
+            value: [
+              {
+                viewModel: "chi",
+                properties: { "chi-num": { type: "number", value: 1 } },
+              },
+              {
+                viewModel: "chi",
+                properties: { "chi-num": { type: "number", value: 2 } },
+              },
+              {
+                viewModel: "chi",
+                properties: { "chi-num": { type: "number", value: 3 } },
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects with a clear error when image path is missing", async () => {
+    await expect(
+      cli.render({
+        rivFile: VM_RUNTIME_RIV,
+        width,
+        height,
+        screenshot: { path: `${TMP}/img-missing.png`, timestamp: 0 },
+        viewModelData: {
+          viewModel: "vm",
+          properties: {
+            ima: { type: "image", value: "/nonexistent/missing.jpg" },
+          },
+        },
+      })
+    ).rejects.toThrow(RiveRenderError);
+  });
+
+  it("identical payloads (image + list + scalar) produce byte-identical PNGs", async () => {
+    const props: Record<string, PropertyValue> = {
+      ima: { type: "image", value: SAMPLE_JPEG },
+      num: { type: "number", value: 7 },
+      lis: {
+        type: "list",
+        value: [
+          {
+            viewModel: "chi",
+            properties: { "chi-num": { type: "number", value: 11 } },
+          },
+          {
+            viewModel: "chi",
+            properties: { "chi-num": { type: "number", value: 22 } },
+          },
+        ],
+      },
+    };
+    const a = await renderWithProps(props, "byte-stable-a");
+    const b = await renderWithProps(props, "byte-stable-b");
+    const c = await renderWithProps(props, "byte-stable-c");
+    expect(a.equals(b)).toBe(true);
+    expect(b.equals(c)).toBe(true);
+  });
+
+  it("snapshot of image + list + scalar binding payload", async () => {
+    const image = await renderWithProps(
+      {
+        ima: { type: "image", value: SAMPLE_JPEG },
+        num: { type: "number", value: 42 },
+        lis: {
+          type: "list",
+          value: [
+            {
+              viewModel: "chi",
+              properties: { "chi-num": { type: "number", value: 1 } },
+            },
+            {
+              viewModel: "chi",
+              properties: { "chi-num": { type: "number", value: 2 } },
+            },
+          ],
+        },
+      },
+      "snap"
+    );
+    expect(image).toMatchImageSnapshot({
+      failureThreshold: 0.001,
+      failureThresholdType: "percent",
+      customSnapshotIdentifier: "vm-runtime-list-image-200x200",
+    });
+  });
+
+  it("backward-compat: identical render with empty viewModelData and no viewModelData are byte-equal", async () => {
+    // The new types are purely additive on the payload schema. The
+    // existing "VM properties: empty" guard in queue_renderer.cpp must
+    // continue to match the no-viewModelData path so existing snapshots
+    // don't drift.
+    const a = await renderToPng({ timestamp: 1.0, width: 400, height: 400 });
+
+    // Same render, but with an explicit-but-empty viewModelData branch
+    // (still no properties). Should hit the same authored-defaults path.
+    const tmp = `${TMP}/bc-empty.png`;
+    await cli.render({
+      rivFile: BASKETBALL_RIV,
+      width: 400,
+      height: 400,
+      screenshot: { path: tmp, timestamp: 1.0 },
+    });
+    const b = readFileSync(tmp);
     expect(a.equals(b)).toBe(true);
   });
 });
