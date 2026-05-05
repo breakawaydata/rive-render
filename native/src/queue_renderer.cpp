@@ -164,8 +164,16 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
                 }
                 if (!rowVm)
                     continue;
-                auto rowInst = !item.instance.empty() ? rowVm->createInstanceFromName(item.instance)
-                                                      : rowVm->createInstance();
+                // Prefer createDefaultInstance for new list rows so the row
+                // VM ships with file-authored defaults — that's also what
+                // populates each row's underlying property objects.
+                // `createInstance()` returns an *empty* runtime instance
+                // whose `propertyString(...)` / `propertyNumber(...)` etc.
+                // return nullptr, so any user-supplied row properties get
+                // silently dropped.
+                auto rowInst = !item.instance.empty()
+                                   ? rowVm->createInstanceFromName(item.instance)
+                                   : rowVm->createDefaultInstance();
                 if (!rowInst)
                     continue;
                 applyPropertiesDirect(file, rowInst.get(), item.properties, imageByPath);
@@ -454,12 +462,38 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (!file || file->viewModelCount() == 0)
                         return;
 
-                    auto* rawVM = file->viewModel(0);
-                    auto* viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    // Resolve which VM to use, in this priority order:
+                    //   1. Caller-specified `viewModel` name (if provided).
+                    //   2. The artboard's own VM (so authored bindings on
+                    //      list-/component-list / nested-artboard slots
+                    //      resolve against the right schema).
+                    //   3. The file's first VM (legacy fallback).
+                    rive::ViewModelRuntime* viewModelRuntime = nullptr;
+                    if (!config.viewModelData.viewModel.empty())
+                        viewModelRuntime = file->viewModelByName(config.viewModelData.viewModel);
+                    if (!viewModelRuntime)
+                    {
+                        auto* artboardForVm = srv->getArtboardInstance(abHandle);
+                        if (artboardForVm)
+                            viewModelRuntime = file->defaultArtboardViewModel(artboardForVm);
+                    }
+                    if (!viewModelRuntime)
+                    {
+                        auto* rawVM = file->viewModel(0);
+                        viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    }
                     if (!viewModelRuntime)
                         return;
 
-                    auto inst = viewModelRuntime->createInstance();
+                    // Use createDefaultInstance() rather than createInstance()
+                    // so file-authored default VM data (including any default
+                    // list rows referenced by an `ArtboardComponentList`
+                    // visual) survives the rebind. `applyPropertiesDirect`
+                    // calls `removeAllInstances()` on each list it touches,
+                    // so caller-supplied list payloads still fully replace
+                    // the defaults — but lists the caller doesn't mention
+                    // keep their authored rows and the artboard renders.
+                    auto inst = viewModelRuntime->createDefaultInstance();
                     if (!inst)
                         return;
 
@@ -694,12 +728,34 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (file->viewModelCount() == 0)
                         return;
 
-                    auto* rawVM = file->viewModel(0);
-                    auto* viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    // Same VM resolution as the step-8 runOnce: prefer the
+                    // caller-named VM, fall back to the artboard's own VM,
+                    // then to the file's first VM. This keeps authored
+                    // bindings on visual list/component-list slots resolving
+                    // against the right schema.
+                    rive::ViewModelRuntime* viewModelRuntime = nullptr;
+                    if (!config.viewModelData.viewModel.empty())
+                        viewModelRuntime = file->viewModelByName(config.viewModelData.viewModel);
+                    if (!viewModelRuntime)
+                    {
+                        auto* artboardForVm = srv->getArtboardInstance(abHandle);
+                        if (artboardForVm)
+                            viewModelRuntime = file->defaultArtboardViewModel(artboardForVm);
+                    }
+                    if (!viewModelRuntime)
+                    {
+                        auto* rawVM = file->viewModel(0);
+                        viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    }
                     if (!viewModelRuntime)
                         return;
 
-                    auto inst = viewModelRuntime->createInstance();
+                    // createDefaultInstance preserves any file-default VM
+                    // data (e.g. authored list rows for an
+                    // ArtboardComponentList). User-supplied list payloads
+                    // still fully replace the matching list because
+                    // applyPropertiesDirect calls removeAllInstances first.
+                    auto inst = viewModelRuntime->createDefaultInstance();
                     if (!inst)
                         return;
 
