@@ -18,12 +18,50 @@ export interface OutputConfig {
   quality?: number;
 }
 
+/**
+ * A row inside a `{ type: "list" }` PropertyValue. Each row instantiates a
+ * ViewModelInstance and binds it into the parent VM's list property in the
+ * order rows appear in the array.
+ *
+ * `viewModel` / `instance` mirror the top-level `ViewModelDataConfig` fields:
+ *   - `viewModel` selects which VM type to instantiate the row from. If
+ *     omitted, the renderer falls back to the artboard's default VM and then
+ *     to the file's first VM; explicitly passing the item VM name is
+ *     recommended for multi-VM files to avoid silent property mismatches.
+ *   - `instance` selects a named instance preset to seed the row from.
+ *     Default is the VM's default instance.
+ *   - `properties` overrides individual properties on the row VM after
+ *     instantiation. Recursively supports any `PropertyValue` (including
+ *     nested `list` rows and `image` bindings).
+ */
+export interface ListItemConfig {
+  viewModel?: string;
+  instance?: string;
+  properties?: Record<string, PropertyValue>;
+}
+
 export type PropertyValue =
   | { type: "string"; value: string }
   | { type: "number"; value: number }
   | { type: "boolean"; value: boolean }
   | { type: "color"; value: string }
-  | { type: "enum"; value: string };
+  | { type: "enum"; value: string }
+  /**
+   * Bind a ViewModel image-property (sets `ViewModelInstanceAssetImage`).
+   * `value` is an absolute filesystem path to a PNG/JPEG/WebP that the
+   * native binary decodes and assigns. This is distinct from
+   * `AssetConfig.images`, which substitutes file-referenced .riv assets
+   * by name. Use `image` for VM-property bindings; use `assets.images`
+   * for replacing referenced asset slots.
+   */
+  | { type: "image"; value: string }
+  /**
+   * Bind a ViewModel data-list property (sets `ViewModelInstanceList`).
+   * Each entry instantiates a ViewModelInstance and is appended to the
+   * list in array order. Existing rows on the underlying instance are
+   * cleared first so the rendered list matches `value` exactly.
+   */
+  | { type: "list"; value: ListItemConfig[] };
 
 export interface ViewModelDataConfig {
   /** ViewModel name (optional, uses default) */

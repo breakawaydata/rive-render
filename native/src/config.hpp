@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 struct ScreenshotConfig
 {
@@ -19,13 +20,28 @@ struct OutputConfig
     int quality = 90;
 };
 
+// One entry inside a `{ "type": "list" }` PropertyValue.
+struct ListItemConfig;
+
 struct ViewModelPropertyValue
 {
-    std::string type; // "string", "number", "boolean", "color", "enum"
+    // "string", "number", "boolean", "color", "enum", "image", "list"
+    std::string type;
     std::string stringValue;
     float numberValue = 0.0f;
     bool boolValue = false;
     uint32_t colorValue = 0;
+
+    // list: child rows, each one becoming a ViewModelInstance bound into
+    // the parent VM's list property in vector order.
+    std::vector<ListItemConfig> listValue;
+};
+
+struct ListItemConfig
+{
+    std::string viewModel;
+    std::string instance;
+    std::map<std::string, ViewModelPropertyValue> properties;
 };
 
 struct ViewModelDataConfig

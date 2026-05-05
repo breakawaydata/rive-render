@@ -18,7 +18,12 @@
 #include "rive/command_queue.hpp"
 #include "rive/command_server.hpp"
 #include "rive/file.hpp"
+#include "rive/renderer.hpp"
 #include "rive/simple_array.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_asset_image_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_list_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
 
 using namespace rive;
 
@@ -63,6 +68,137 @@ static std::string cdnUrlFor(rive::FileAsset* asset)
         url += '/';
     url += cdnUuid;
     return url;
+}
+
+// Walk a property tree and collect every `image` property's filesystem path.
+// Recurses through nested list rows so a `{ type: "image" }` payload anywhere
+// in the tree gets pre-decoded.
+static void collectImagePaths(const std::map<std::string, ViewModelPropertyValue>& properties,
+                              std::vector<std::string>& outPaths)
+{
+    for (auto& [_, prop] : properties)
+    {
+        if (prop.type == "image" && !prop.stringValue.empty())
+            outPaths.push_back(prop.stringValue);
+        else if (prop.type == "list")
+        {
+            for (auto& item : prop.listValue)
+                collectImagePaths(item.properties, outPaths);
+        }
+    }
+}
+
+// Resolve a VM runtime using the 3-priority chain shared by all render paths:
+//   1. Caller-specified `vmName` (if non-empty).
+//   2. The artboard's own default VM (so authored list/component-list slots
+//      resolve against the right schema).
+//   3. The file's first VM (legacy fallback).
+// Returns nullptr if none can be found.
+static rive::ViewModelRuntime* resolveViewModelRuntime(rive::File* file,
+                                                       rive::ArtboardInstance* artboard,
+                                                       const std::string& vmName)
+{
+    rive::ViewModelRuntime* vm = nullptr;
+    if (!vmName.empty())
+        vm = file->viewModelByName(vmName);
+    if (!vm && artboard)
+        vm = file->defaultArtboardViewModel(artboard);
+    if (!vm)
+    {
+        auto* raw = file->viewModel(0);
+        vm = raw ? file->viewModelByName(raw->name()) : nullptr;
+    }
+    return vm;
+}
+
+// Apply a property map to a ViewModelInstanceRuntime. Used by the runOnce
+// direct path. Recursively descends into list children — each list row gets
+// a freshly created VM instance, has its own properties applied, and is
+// appended to the parent list.
+//
+// `imageHandles` maps the raw image-path string supplied in the payload to
+// the decoded handle on the server. Images must have been decoded ahead of
+// time (server-thread `getImage(handle)`) so this function is purely a
+// dispatch.
+static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRuntime* inst,
+                                  const std::map<std::string, ViewModelPropertyValue>& properties,
+                                  const std::map<std::string, rive::RenderImage*>& imageByPath)
+{
+    if (!inst)
+        return;
+    for (auto& [path, prop] : properties)
+    {
+        if (prop.type == "string")
+        {
+            if (auto* p = inst->propertyString(path))
+                p->value(prop.stringValue);
+        }
+        else if (prop.type == "number")
+        {
+            if (auto* p = inst->propertyNumber(path))
+                p->value(prop.numberValue);
+        }
+        else if (prop.type == "boolean")
+        {
+            if (auto* p = inst->propertyBoolean(path))
+                p->value(prop.boolValue);
+        }
+        else if (prop.type == "color")
+        {
+            if (auto* p = inst->propertyColor(path))
+                p->value(static_cast<int>(prop.colorValue));
+        }
+        else if (prop.type == "enum")
+        {
+            if (auto* p = inst->propertyEnum(path))
+                p->value(prop.stringValue);
+        }
+        else if (prop.type == "image")
+        {
+            auto* p = inst->propertyImage(path);
+            if (!p)
+                continue;
+            auto it = imageByPath.find(prop.stringValue);
+            if (it != imageByPath.end() && it->second)
+                p->value(it->second);
+        }
+        else if (prop.type == "list")
+        {
+            auto* listProp = inst->propertyList(path);
+            if (!listProp)
+                continue;
+            // Reset to a known state so the rendered list matches the
+            // payload exactly. Without this, repeated renders against the
+            // same VM instance would accumulate rows.
+            listProp->removeAllInstances();
+            for (auto& item : prop.listValue)
+            {
+                if (file->viewModelCount() == 0)
+                    break;
+                // Resolve the row VM: prefer the caller-supplied name, fall
+                // back to the file's first VM (same last-resort as the parent
+                // path). No artboard context is available here, so the
+                // artboard-default-VM step is skipped for rows.
+                rive::ViewModelRuntime* rowVm =
+                    resolveViewModelRuntime(file, nullptr, item.viewModel);
+                if (!rowVm)
+                    continue;
+                // Prefer createDefaultInstance for new list rows so the row
+                // VM ships with file-authored defaults — that's also what
+                // populates each row's underlying property objects.
+                // `createInstance()` returns an *empty* runtime instance
+                // whose `propertyString(...)` / `propertyNumber(...)` etc.
+                // return nullptr, so any user-supplied row properties get
+                // silently dropped.
+                auto rowInst = !item.instance.empty() ? rowVm->createInstanceFromName(item.instance)
+                                                      : rowVm->createDefaultInstance();
+                if (!rowInst)
+                    continue;
+                applyPropertiesDirect(file, rowInst.get(), item.properties, imageByPath);
+                listProp->addInstance(rowInst.get());
+            }
+        }
+    }
 }
 
 // File listener to know when loading completes
@@ -160,6 +296,25 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             queue->addGlobalFontAsset(toUniqueName(name), handle);
         }
 
+        // 4b. Decode every image referenced by a `{ type: "image" }` VM
+        // property (including those nested inside list rows) into a separate
+        // handle map. These do NOT register as global assets — they bind to
+        // VM image-property slots, not to file-referenced asset slots. The
+        // distinction matches `@rive-app/react-native@0.4.5`'s split between
+        // `RiveImages` (which we model as `assets.images`) and
+        // `ViewModelImageProperty` (which we model as `{ type: "image" }`).
+        std::map<std::string, RenderImageHandle> vmImageHandles;
+        {
+            std::vector<std::string> vmImagePaths;
+            collectImagePaths(config.viewModelData.properties, vmImagePaths);
+            for (auto& path : vmImagePaths)
+            {
+                if (vmImageHandles.count(path))
+                    continue; // dedupe: same file referenced twice
+                vmImageHandles[path] = queue->decodeImage(readAssetFile(path));
+            }
+        }
+
         // 5. Load file
         QueueFileListener fileListener;
         auto fileHandle =
@@ -248,7 +403,8 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                             : queue->instantiateStateMachineNamed(abHandle, config.stateMachine);
 
         // 8. Bind view model data (if provided)
-        if (!config.viewModelData.properties.empty() || !decodedImages.empty())
+        if (!config.viewModelData.properties.empty() || !decodedImages.empty() ||
+            !vmImageHandles.empty())
         {
             // Instantiate a view model instance.
             //
@@ -268,7 +424,14 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                                 : queue->instantiateViewModelInstanceNamed(
                                       fileHandle, abHandle, config.viewModelData.instance);
 
-            // Set properties via queue commands
+            // Set properties via queue commands.
+            // Note: `list` properties are NOT applied here. Building list
+            // rows requires `propertyList(...)->addInstance(...)` which is
+            // only callable from the runOnce direct path below — the queue
+            // currently exposes `appendViewModelInstanceListViewModel` for
+            // ViewModel-typed lists but not the per-row property setting
+            // we need for arbitrary nested data. The runOnce pass handles
+            // both image and list bindings.
             for (auto& [path, prop] : config.viewModelData.properties)
             {
                 if (prop.type == "string")
@@ -281,9 +444,16 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     queue->setViewModelInstanceColor(vmHandle, path, prop.colorValue);
                 else if (prop.type == "enum")
                     queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
+                else if (prop.type == "image")
+                {
+                    auto it = vmImageHandles.find(prop.stringValue);
+                    if (it != vmImageHandles.end())
+                        queue->setViewModelInstanceImage(vmHandle, path, it->second);
+                }
+                // `list` is intentionally skipped — handled by runOnce below.
             }
 
-            // Set view model image properties from decoded assets.
+            // Set view model image properties from referenced asset replacements.
             for (auto& [name, imgHandle] : decodedImages)
             {
                 queue->setViewModelInstanceImage(vmHandle, name, imgHandle);
@@ -304,49 +474,38 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             // bind it. This ensures all properties reach the artboard
             // regardless of which VM schema it was originally linked to.
             queue->runOnce(
-                [fileHandle, abHandle, smHandle, &config](CommandServer* srv)
+                [fileHandle, abHandle, smHandle, &config, &vmImageHandles](CommandServer* srv)
                 {
                     auto* file = srv->getFile(fileHandle);
                     if (!file || file->viewModelCount() == 0)
                         return;
 
-                    auto* rawVM = file->viewModel(0);
-                    auto* viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    auto* artboardForVm = srv->getArtboardInstance(abHandle);
+                    auto* viewModelRuntime = resolveViewModelRuntime(
+                        file, artboardForVm, config.viewModelData.viewModel);
                     if (!viewModelRuntime)
                         return;
 
-                    auto inst = viewModelRuntime->createInstance();
+                    // Use createDefaultInstance() rather than createInstance()
+                    // so file-authored default VM data (including any default
+                    // list rows referenced by an `ArtboardComponentList`
+                    // visual) survives the rebind. `applyPropertiesDirect`
+                    // calls `removeAllInstances()` on each list it touches,
+                    // so caller-supplied list payloads still fully replace
+                    // the defaults — but lists the caller doesn't mention
+                    // keep their authored rows and the artboard renders.
+                    auto inst = viewModelRuntime->createDefaultInstance();
                     if (!inst)
                         return;
 
-                    for (auto& [path, prop] : config.viewModelData.properties)
-                    {
-                        if (prop.type == "string")
-                        {
-                            if (auto* p = inst->propertyString(path))
-                                p->value(prop.stringValue);
-                        }
-                        else if (prop.type == "number")
-                        {
-                            if (auto* p = inst->propertyNumber(path))
-                                p->value(prop.numberValue);
-                        }
-                        else if (prop.type == "boolean")
-                        {
-                            if (auto* p = inst->propertyBoolean(path))
-                                p->value(prop.boolValue);
-                        }
-                        else if (prop.type == "color")
-                        {
-                            if (auto* p = inst->propertyColor(path))
-                                p->value(static_cast<int>(prop.colorValue));
-                        }
-                        else if (prop.type == "enum")
-                        {
-                            if (auto* p = inst->propertyEnum(path))
-                                p->value(prop.stringValue);
-                        }
-                    }
+                    // Resolve image handles into RenderImage* for direct
+                    // assignment via propertyImage()->value(...).
+                    std::map<std::string, rive::RenderImage*> imageByPath;
+                    for (auto& [path, handle] : vmImageHandles)
+                        imageByPath[path] = srv->getImage(handle);
+
+                    applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
+                                          imageByPath);
 
                     auto* sm = srv->getStateMachineInstance(smHandle);
                     if (sm)
@@ -510,7 +669,8 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         {
             auto* factory = headless.factory();
             queue->runOnce(
-                [fileHandle, abHandle, smHandle, &config, factory](CommandServer* srv)
+                [fileHandle, abHandle, smHandle, &config, &vmImageHandles,
+                 factory](CommandServer* srv)
                 {
                     auto* file = srv->getFile(fileHandle);
                     if (!file)
@@ -569,44 +729,27 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (file->viewModelCount() == 0)
                         return;
 
-                    auto* rawVM = file->viewModel(0);
-                    auto* viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
+                    auto* artboardForVm2 = srv->getArtboardInstance(abHandle);
+                    auto* viewModelRuntime = resolveViewModelRuntime(
+                        file, artboardForVm2, config.viewModelData.viewModel);
                     if (!viewModelRuntime)
                         return;
 
-                    auto inst = viewModelRuntime->createInstance();
+                    // createDefaultInstance preserves any file-default VM
+                    // data (e.g. authored list rows for an
+                    // ArtboardComponentList). User-supplied list payloads
+                    // still fully replace the matching list because
+                    // applyPropertiesDirect calls removeAllInstances first.
+                    auto inst = viewModelRuntime->createDefaultInstance();
                     if (!inst)
                         return;
 
-                    for (auto& [path, prop] : config.viewModelData.properties)
-                    {
-                        if (prop.type == "string")
-                        {
-                            auto* p = inst->propertyString(path);
-                            if (p)
-                                p->value(prop.stringValue);
-                        }
-                        else if (prop.type == "number")
-                        {
-                            if (auto* p = inst->propertyNumber(path))
-                                p->value(prop.numberValue);
-                        }
-                        else if (prop.type == "boolean")
-                        {
-                            if (auto* p = inst->propertyBoolean(path))
-                                p->value(prop.boolValue);
-                        }
-                        else if (prop.type == "color")
-                        {
-                            if (auto* p = inst->propertyColor(path))
-                                p->value(static_cast<int>(prop.colorValue));
-                        }
-                        else if (prop.type == "enum")
-                        {
-                            if (auto* p = inst->propertyEnum(path))
-                                p->value(prop.stringValue);
-                        }
-                    }
+                    std::map<std::string, rive::RenderImage*> imageByPath;
+                    for (auto& [path, handle] : vmImageHandles)
+                        imageByPath[path] = srv->getImage(handle);
+
+                    applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
+                                          imageByPath);
 
                     auto* sm = srv->getStateMachineInstance(smHandle);
                     if (sm)

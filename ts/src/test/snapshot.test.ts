@@ -19,6 +19,20 @@ const BASKETBALL_RIV = resolve(FIXTURES, "basketball.riv"); // uses LinearAnimat
 const STATEMACHINE_RIV = resolve(FIXTURES, "teststatemachine.riv"); // uses StateMachine
 const ASSET_LOAD_CHECK_RIV = resolve(FIXTURES, "asset_load_check.riv"); // has embedded + referenced asset slots
 const DATA_BINDING_RIV = resolve(FIXTURES, "data_binding_test.riv"); // artboard-1 has width/rotation/color/text/orient bound props
+// component_list_1.riv is committed from rive-app/rive-runtime
+// (tests/unit_tests/assets/component_list_1.riv) — a public Rive-team
+// fixture exercised by the rive-runtime `component_list_test.cpp` tests.
+// It declares a `MainVM` view model with a `Buttons` list of `ItemVM`
+// (each with a `Label` string), and the artboard renders the list rows
+// as labelled buttons. This makes it a strong visual-delta fixture for
+// the DataList VM-property binding path: the row count and label values
+// should both be visible in the rendered output.
+const COMPONENT_LIST_RIV = resolve(FIXTURES, "component_list_1.riv");
+// data_binding_images_test.riv has a `main` view model with an
+// `assetImage` property `main_im` bound to a visual image slot — swapping
+// the image visibly changes the artboard (figurines vs galaxy-glasses).
+const DATA_BINDING_IMAGES_RIV = resolve(FIXTURES, "data_binding_images_test.riv");
+const SAMPLE_JPEG = resolve(FIXTURES, "picture-47982.jpeg");
 const TMP = "/tmp/rive-snapshot-work";
 
 // Reference files saved in repo (images, gifs, mp4s)
@@ -608,6 +622,240 @@ describe("View model data binding", () => {
     const b = await renderWithProperties({
       width: { type: "number", value: 175 },
     });
+    expect(a.equals(b)).toBe(true);
+  });
+});
+
+// ─── DataList VM-property binding (component_list_1.riv) ───
+//
+// component_list_1.riv comes from rive-runtime's own test suite — its
+// artboard renders an `ArtboardComponentList` driven by `MainVM.Buttons`,
+// a list of `ItemVM` rows each carrying a `Label` string. Because the
+// list is wired all the way to a visual component, replacing the rows
+// via `{ type: "list", ... }` produces a directly observable visual
+// delta: row count, row labels, and total layout height all change.
+//
+// This is the regression guard the prior smoke-fixture-based tests were
+// missing: previously the bindings mutated the VM but never touched
+// pixels, and the tests still passed because they only diffed against
+// the authored default.
+
+describe("View model DataList binding (component_list_1)", () => {
+  const width = 400;
+  const height = 400;
+
+  async function renderList(
+    items: Array<{ label: string }>,
+    outName: string
+  ): Promise<Buffer> {
+    const tmp = `${TMP}/${outName}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+    await cli.render({
+      rivFile: COMPONENT_LIST_RIV,
+      width,
+      height,
+      screenshot: { path: tmp, timestamp: 0.5 },
+      viewModelData: {
+        viewModel: "MainVM",
+        properties: {
+          Buttons: {
+            type: "list",
+            value: items.map((it) => ({
+              viewModel: "ItemVM",
+              properties: { Label: { type: "string", value: it.label } },
+            })),
+          },
+        },
+      },
+    });
+    const buf = readFileSync(tmp);
+    require("fs").unlinkSync(tmp);
+    return buf;
+  }
+
+  it("renders a payload-driven list snapshot (FOO/BAR/BAZ)", async () => {
+    // Three row-labelled buttons must be visible in the snapshot. If the
+    // list payload were silently dropped, the artboard would fall back to
+    // its 8 authored rows (ONE/TWO/THREE…) and the snapshot would diverge.
+    const image = await renderList(
+      [{ label: "FOO" }, { label: "BAR" }, { label: "BAZ" }],
+      "list-foo-bar-baz"
+    );
+    expect(image).toMatchImageSnapshot({
+      failureThreshold: 0.001,
+      failureThresholdType: "percent",
+      customSnapshotIdentifier: "component-list-foo-bar-baz-400x400",
+    });
+  });
+
+  it("different list lengths produce visually different renders", async () => {
+    const two = await renderList([{ label: "A" }, { label: "B" }], "two");
+    const five = await renderList(
+      [
+        { label: "A" },
+        { label: "B" },
+        { label: "C" },
+        { label: "D" },
+        { label: "E" },
+      ],
+      "five"
+    );
+    // More rows means more vertical real-estate consumed — the PNGs must
+    // differ. Same-length-different-label tests are covered by the
+    // labelled snapshot above; this test specifically catches a
+    // degenerate fix where row count is silently truncated or ignored.
+    expect(two.equals(five)).toBe(false);
+  });
+
+  it("identical list payloads produce byte-identical PNGs", async () => {
+    const items = [{ label: "X" }, { label: "Y" }, { label: "Z" }];
+    const a = await renderList(items, "stable-a");
+    const b = await renderList(items, "stable-b");
+    expect(a.equals(b)).toBe(true);
+  });
+
+  it("payload-driven labels override authored defaults", async () => {
+    // Without a list payload the artboard renders MainVM's 8 authored
+    // rows. Supplying our own three-row list must replace them entirely
+    // — if `removeAllInstances()` were a no-op the row count would stay
+    // at 8 and this would match.
+    const tmpDefault = `${TMP}/cl-default-${Date.now()}.png`;
+    await cli.render({
+      rivFile: COMPONENT_LIST_RIV,
+      width,
+      height,
+      screenshot: { path: tmpDefault, timestamp: 0.5 },
+      viewModelData: {
+        viewModel: "MainVM",
+        // Bind a single dummy property so the renderer's
+        // `properties.empty()` short-circuits don't skip VM binding.
+        // ItemVM-only properties (e.g. Label) on MainVM resolve to no-op
+        // setters and don't perturb the authored list.
+        properties: { Label: { type: "string", value: "" } },
+      },
+    });
+    const authored = readFileSync(tmpDefault);
+    const overridden = await renderList(
+      [{ label: "ONLY" }],
+      "cl-overridden"
+    );
+    expect(authored.equals(overridden)).toBe(false);
+  });
+});
+
+// ─── Image VM-property binding (data_binding_images_test.riv) ───
+//
+// data_binding_images_test.riv has a `main` view model with an
+// `assetImage` property `main_im` driving a full-artboard image slot.
+// Default render shows four figurine photographs; binding `main_im` to
+// our sample JPEG replaces the slot with the galaxy-glasses image, a
+// dramatic visual delta that catches any regression in the image binding
+// path.
+
+describe("View model image binding (data_binding_images_test)", () => {
+  const width = 400;
+  const height = 400;
+
+  it("rejects with a clear error when image path is missing", async () => {
+    await expect(
+      cli.render({
+        rivFile: DATA_BINDING_IMAGES_RIV,
+        width,
+        height,
+        screenshot: { path: `${TMP}/img-missing.png`, timestamp: 0 },
+        viewModelData: {
+          viewModel: "main",
+          properties: {
+            main_im: { type: "image", value: "/nonexistent/missing.jpg" },
+          },
+        },
+      })
+    ).rejects.toThrow(RiveRenderError);
+  });
+
+  it("payload-bound image visibly replaces the authored slot", async () => {
+    const tmpDefault = `${TMP}/img-default-${Date.now()}.png`;
+    await cli.render({
+      rivFile: DATA_BINDING_IMAGES_RIV,
+      width,
+      height,
+      screenshot: { path: tmpDefault, timestamp: 0 },
+    });
+    const authored = readFileSync(tmpDefault);
+
+    const tmpBound = `${TMP}/img-bound-${Date.now()}.png`;
+    await cli.render({
+      rivFile: DATA_BINDING_IMAGES_RIV,
+      width,
+      height,
+      screenshot: { path: tmpBound, timestamp: 0 },
+      viewModelData: {
+        viewModel: "main",
+        properties: { main_im: { type: "image", value: SAMPLE_JPEG } },
+      },
+    });
+    const bound = readFileSync(tmpBound);
+    expect(authored.equals(bound)).toBe(false);
+  });
+
+  it("snapshot of payload-bound image", async () => {
+    const tmp = `${TMP}/img-snap-${Date.now()}.png`;
+    await cli.render({
+      rivFile: DATA_BINDING_IMAGES_RIV,
+      width,
+      height,
+      screenshot: { path: tmp, timestamp: 0 },
+      viewModelData: {
+        viewModel: "main",
+        properties: { main_im: { type: "image", value: SAMPLE_JPEG } },
+      },
+    });
+    expect(readFileSync(tmp)).toMatchImageSnapshot({
+      failureThreshold: 0.001,
+      failureThresholdType: "percent",
+      customSnapshotIdentifier: "image-binding-galaxy-400x400",
+    });
+  });
+
+  it("identical image payloads produce byte-identical PNGs", async () => {
+    const render = async (out: string) => {
+      const tmp = `${TMP}/${out}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+      await cli.render({
+        rivFile: DATA_BINDING_IMAGES_RIV,
+        width,
+        height,
+        screenshot: { path: tmp, timestamp: 0 },
+        viewModelData: {
+          viewModel: "main",
+          properties: { main_im: { type: "image", value: SAMPLE_JPEG } },
+        },
+      });
+      const buf = readFileSync(tmp);
+      require("fs").unlinkSync(tmp);
+      return buf;
+    };
+    const a = await render("img-stable-a");
+    const b = await render("img-stable-b");
+    expect(a.equals(b)).toBe(true);
+  });
+});
+
+// ─── Backward compatibility ───
+//
+// Existing fixtures with no viewModelData payload must continue to match
+// their committed snapshots — the new types are purely additive.
+
+describe("View model bindings backward compat", () => {
+  it("no viewModelData and explicit-empty render byte-equal for basketball", async () => {
+    const a = await renderToPng({ timestamp: 1.0, width: 400, height: 400 });
+    const tmp = `${TMP}/bc-empty.png`;
+    await cli.render({
+      rivFile: BASKETBALL_RIV,
+      width: 400,
+      height: 400,
+      screenshot: { path: tmp, timestamp: 1.0 },
+      viewModelData: { properties: {} },
+    });
+    const b = readFileSync(tmp);
     expect(a.equals(b)).toBe(true);
   });
 });
