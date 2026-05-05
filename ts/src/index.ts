@@ -7,4 +7,5 @@ export type {
   ViewModelDataConfig,
   AssetConfig,
   PropertyValue,
+  ListItemConfig,
 } from "./types.js";

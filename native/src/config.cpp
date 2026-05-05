@@ -180,7 +180,94 @@ uint32_t parseHexColor(const std::string& hex)
     return value;
 }
 
-// Parse a ViewModelData properties sub-object: { "propName": { "type": "...", "value": ... }, ... }
+// Forward decls — list values nest into ListItemConfig which itself contains
+// a property map, which again can contain list values. Manually breaking the
+// recursion so all parsers can call each other.
+std::map<std::string, ViewModelPropertyValue> parseViewModelProperties(const std::string& s,
+                                                                       size_t& i);
+
+// Parse a single list item: { "viewModel"?: "...", "instance"?: "...",
+//                             "properties"?: { ... } }
+ListItemConfig parseListItem(const std::string& s, size_t& i)
+{
+    ListItemConfig item;
+    i = skipWs(s, i);
+    if (s[i] != '{')
+        throw std::runtime_error("Expected list item object");
+    ++i;
+    while (true)
+    {
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        if (s[i] == ',')
+            ++i;
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        auto key = parseString(s, i);
+        i = skipWs(s, i);
+        if (s[i] != ':')
+            throw std::runtime_error("Expected ':'");
+        ++i;
+        i = skipWs(s, i);
+        if (key == "viewModel")
+            item.viewModel = parseString(s, i);
+        else if (key == "instance")
+            item.instance = parseString(s, i);
+        else if (key == "properties")
+            item.properties = parseViewModelProperties(s, i);
+        else
+            skipValue(s, i);
+    }
+    return item;
+}
+
+// Parse a JSON array of list items.
+std::vector<ListItemConfig> parseListItems(const std::string& s, size_t& i)
+{
+    std::vector<ListItemConfig> items;
+    i = skipWs(s, i);
+    if (s[i] != '[')
+        throw std::runtime_error("Expected list array '['");
+    ++i;
+    while (true)
+    {
+        i = skipWs(s, i);
+        if (s[i] == ']')
+        {
+            ++i;
+            break;
+        }
+        if (s[i] == ',')
+            ++i;
+        i = skipWs(s, i);
+        if (s[i] == ']')
+        {
+            ++i;
+            break;
+        }
+        items.push_back(parseListItem(s, i));
+    }
+    return items;
+}
+
+// Parse a ViewModelData properties sub-object:
+// { "propName": { "type": "...", "value": ... }, ... }
+//
+// `value` may be:
+//   - string  -> stringValue          (string / enum / color hex / image path)
+//   - number  -> numberValue
+//   - boolean -> boolValue
+//   - array   -> listValue (each entry is a ListItemConfig)
+//
+// The `type` field disambiguates how the runtime applies the value.
 std::map<std::string, ViewModelPropertyValue> parseViewModelProperties(const std::string& s,
                                                                        size_t& i)
 {
@@ -250,12 +337,17 @@ std::map<std::string, ViewModelPropertyValue> parseViewModelProperties(const std
                 // into all fields that make sense for the literal type.
                 if (s[i] == '"')
                 {
-                    // String or color or enum value
+                    // String / color / enum / image value
                     prop.stringValue = parseString(s, i);
                 }
                 else if (s[i] == 't' || s[i] == 'f')
                 {
                     prop.boolValue = parseBool(s, i);
+                }
+                else if (s[i] == '[')
+                {
+                    // List value: array of ListItemConfig
+                    prop.listValue = parseListItems(s, i);
                 }
                 else
                 {
