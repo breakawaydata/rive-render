@@ -88,6 +88,29 @@ static void collectImagePaths(const std::map<std::string, ViewModelPropertyValue
     }
 }
 
+// Resolve a VM runtime using the 3-priority chain shared by all render paths:
+//   1. Caller-specified `vmName` (if non-empty).
+//   2. The artboard's own default VM (so authored list/component-list slots
+//      resolve against the right schema).
+//   3. The file's first VM (legacy fallback).
+// Returns nullptr if none can be found.
+static rive::ViewModelRuntime* resolveViewModelRuntime(rive::File* file,
+                                                       rive::ArtboardInstance* artboard,
+                                                       const std::string& vmName)
+{
+    rive::ViewModelRuntime* vm = nullptr;
+    if (!vmName.empty())
+        vm = file->viewModelByName(vmName);
+    if (!vm && artboard)
+        vm = file->defaultArtboardViewModel(artboard);
+    if (!vm)
+    {
+        auto* raw = file->viewModel(0);
+        vm = raw ? file->viewModelByName(raw->name()) : nullptr;
+    }
+    return vm;
+}
+
 // Apply a property map to a ViewModelInstanceRuntime. Used by the runOnce
 // direct path. Recursively descends into list children — each list row gets
 // a freshly created VM instance, has its own properties applied, and is
@@ -152,16 +175,12 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
             {
                 if (file->viewModelCount() == 0)
                     break;
-                rive::ViewModelRuntime* rowVm = nullptr;
-                if (!item.viewModel.empty())
-                    rowVm = file->viewModelByName(item.viewModel);
-                if (!rowVm)
-                {
-                    // Fallback: use the file's first VM. Same behaviour as
-                    // the existing "first VM" fallback on the parent path.
-                    auto* rawVM = file->viewModel(0);
-                    rowVm = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
-                }
+                // Resolve the row VM: prefer the caller-supplied name, fall
+                // back to the file's first VM (same last-resort as the parent
+                // path). No artboard context is available here, so the
+                // artboard-default-VM step is skipped for rows.
+                rive::ViewModelRuntime* rowVm =
+                    resolveViewModelRuntime(file, nullptr, item.viewModel);
                 if (!rowVm)
                     continue;
                 // Prefer createDefaultInstance for new list rows so the row
@@ -461,26 +480,9 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (!file || file->viewModelCount() == 0)
                         return;
 
-                    // Resolve which VM to use, in this priority order:
-                    //   1. Caller-specified `viewModel` name (if provided).
-                    //   2. The artboard's own VM (so authored bindings on
-                    //      list-/component-list / nested-artboard slots
-                    //      resolve against the right schema).
-                    //   3. The file's first VM (legacy fallback).
-                    rive::ViewModelRuntime* viewModelRuntime = nullptr;
-                    if (!config.viewModelData.viewModel.empty())
-                        viewModelRuntime = file->viewModelByName(config.viewModelData.viewModel);
-                    if (!viewModelRuntime)
-                    {
-                        auto* artboardForVm = srv->getArtboardInstance(abHandle);
-                        if (artboardForVm)
-                            viewModelRuntime = file->defaultArtboardViewModel(artboardForVm);
-                    }
-                    if (!viewModelRuntime)
-                    {
-                        auto* rawVM = file->viewModel(0);
-                        viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
-                    }
+                    auto* artboardForVm = srv->getArtboardInstance(abHandle);
+                    auto* viewModelRuntime = resolveViewModelRuntime(
+                        file, artboardForVm, config.viewModelData.viewModel);
                     if (!viewModelRuntime)
                         return;
 
@@ -727,25 +729,9 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                     if (file->viewModelCount() == 0)
                         return;
 
-                    // Same VM resolution as the step-8 runOnce: prefer the
-                    // caller-named VM, fall back to the artboard's own VM,
-                    // then to the file's first VM. This keeps authored
-                    // bindings on visual list/component-list slots resolving
-                    // against the right schema.
-                    rive::ViewModelRuntime* viewModelRuntime = nullptr;
-                    if (!config.viewModelData.viewModel.empty())
-                        viewModelRuntime = file->viewModelByName(config.viewModelData.viewModel);
-                    if (!viewModelRuntime)
-                    {
-                        auto* artboardForVm = srv->getArtboardInstance(abHandle);
-                        if (artboardForVm)
-                            viewModelRuntime = file->defaultArtboardViewModel(artboardForVm);
-                    }
-                    if (!viewModelRuntime)
-                    {
-                        auto* rawVM = file->viewModel(0);
-                        viewModelRuntime = rawVM ? file->viewModelByName(rawVM->name()) : nullptr;
-                    }
+                    auto* artboardForVm2 = srv->getArtboardInstance(abHandle);
+                    auto* viewModelRuntime = resolveViewModelRuntime(
+                        file, artboardForVm2, config.viewModelData.viewModel);
                     if (!viewModelRuntime)
                         return;
 

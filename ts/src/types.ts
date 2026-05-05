@@ -24,8 +24,10 @@ export interface OutputConfig {
  * order rows appear in the array.
  *
  * `viewModel` / `instance` mirror the top-level `ViewModelDataConfig` fields:
- *   - `viewModel` selects which VM type to instantiate the row from. Default
- *     is the list element's declared item-VM type.
+ *   - `viewModel` selects which VM type to instantiate the row from. If
+ *     omitted, the renderer falls back to the artboard's default VM and then
+ *     to the file's first VM; explicitly passing the item VM name is
+ *     recommended for multi-VM files to avoid silent property mismatches.
  *   - `instance` selects a named instance preset to seed the row from.
  *     Default is the VM's default instance.
  *   - `properties` overrides individual properties on the row VM after
