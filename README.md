@@ -145,6 +145,34 @@ await cli.render({
       progress: { type: "number", value: 0.75 },
       isActive: { type: "boolean", value: true },
       primaryColor: { type: "color", value: "#FF5500" },
+      // Bind a `ViewModelInstanceAssetImage` slot to a local image file
+      // (PNG/JPEG/WebP). The file is decoded and assigned to the VM
+      // image-property slot — distinct from `assets.images`, which is
+      // for replacing referenced .riv assets by name.
+      teamLogo: { type: "image", value: "/path/to/team-logo.png" },
+      // Bind a DataList VM property. Each entry instantiates a row VM
+      // (defaults to the file's first VM if `viewModel` is omitted) and
+      // appends it to the list. Per-row property values can include any
+      // PropertyValue, including nested lists and image bindings.
+      stats: {
+        type: "list",
+        value: [
+          {
+            viewModel: "StatRow",
+            properties: {
+              label: { type: "string", value: "Points" },
+              value: { type: "number", value: 24 },
+            },
+          },
+          {
+            viewModel: "StatRow",
+            properties: {
+              label: { type: "string", value: "Rebounds" },
+              value: { type: "number", value: 11 },
+            },
+          },
+        ],
+      },
     },
   },
 });
