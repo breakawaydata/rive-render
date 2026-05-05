@@ -171,9 +171,8 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
                 // whose `propertyString(...)` / `propertyNumber(...)` etc.
                 // return nullptr, so any user-supplied row properties get
                 // silently dropped.
-                auto rowInst = !item.instance.empty()
-                                   ? rowVm->createInstanceFromName(item.instance)
-                                   : rowVm->createDefaultInstance();
+                auto rowInst = !item.instance.empty() ? rowVm->createInstanceFromName(item.instance)
+                                                      : rowVm->createDefaultInstance();
                 if (!rowInst)
                     continue;
                 applyPropertiesDirect(file, rowInst.get(), item.properties, imageByPath);

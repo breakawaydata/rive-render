@@ -853,6 +853,7 @@ describe("View model bindings backward compat", () => {
       width: 400,
       height: 400,
       screenshot: { path: tmp, timestamp: 1.0 },
+      viewModelData: { properties: {} },
     });
     const b = readFileSync(tmp);
     expect(a.equals(b)).toBe(true);

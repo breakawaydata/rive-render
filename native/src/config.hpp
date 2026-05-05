@@ -32,12 +32,6 @@ struct ViewModelPropertyValue
     bool boolValue = false;
     uint32_t colorValue = 0;
 
-    // image: filesystem path (PNG/JPEG/WebP).
-    // Stored in `stringValue` so the existing JSON parser handles it without
-    // a special-case path. Kept as a separate alias here for clarity at call
-    // sites in queue_renderer.cpp.
-    const std::string& imagePath() const { return stringValue; }
-
     // list: child rows, each one becoming a ViewModelInstance bound into
     // the parent VM's list property in vector order.
     std::vector<ListItemConfig> listValue;
