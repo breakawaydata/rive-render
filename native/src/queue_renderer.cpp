@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include <curl/curl.h>
+
 #include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_input_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
@@ -39,19 +41,50 @@ static std::vector<uint8_t> readAssetFile(const std::string& path)
     return bytes;
 }
 
-// Fetch bytes from a URL via curl. Returns empty on failure.
+static size_t curlWriteToVector(char* ptr, size_t size, size_t nmemb, void* userdata)
+{
+    auto* out = static_cast<std::vector<uint8_t>*>(userdata);
+    const size_t total = size * nmemb;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(ptr);
+    out->insert(out->end(), bytes, bytes + total);
+    return total;
+}
+
+// Fetch bytes from a URL in-process via libcurl. Returns empty on failure.
+//
+// This deliberately does NOT shell out to the `curl` binary: the production
+// backend runs on a hardened, minimal container image with no `/bin/sh` and
+// no `curl` executable, so a `popen("curl ...")` here silently failed and
+// CDN-hosted Rive assets (notably nameplate fonts) never loaded — rendering
+// blank text. libcurl is linked into the binary, so this works regardless of
+// what executables exist in the runtime image.
 static std::vector<uint8_t> fetchUrl(const std::string& url)
 {
-    std::string cmd = "curl -sL '" + url + "'";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe)
+    // curl_global_init / curl_global_cleanup are handled once in main() before
+    // any threads start (libcurl's global init is not thread-safe). Here we
+    // only create a per-call easy handle, which is safe on the server thread.
+    CURL* curl = curl_easy_init();
+    if (!curl)
         return {};
+
     std::vector<uint8_t> data;
-    uint8_t buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    pclose(pipe);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteToVector);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L); // HTTP >= 400 -> failure
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // thread-safe timeouts
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "rive-render");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // accept gzip/deflate
+
+    const CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK)
+        return {};
     return data;
 }
 

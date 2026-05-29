@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include <curl/curl.h>
+
 #include "config.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
@@ -61,6 +63,17 @@ static void outputJson(bool success, const std::string& outputPath = "", int fra
 
 int main(int argc, char* argv[])
 {
+    // Initialize libcurl once, before any worker threads are spawned (the
+    // CommandServer thread starts inside renderWithQueue). libcurl's
+    // curl_global_init is not thread-safe and must run while no other thread
+    // is active; the RAII guard also guarantees curl_global_cleanup on every
+    // exit path.
+    struct CurlGlobal
+    {
+        CurlGlobal() { curl_global_init(CURL_GLOBAL_DEFAULT); }
+        ~CurlGlobal() { curl_global_cleanup(); }
+    } curlGlobal;
+
     try
     {
         // Read JSON config from stdin (or --config file)
