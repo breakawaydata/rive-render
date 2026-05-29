@@ -55,6 +55,7 @@ jobs:
             llvm \
             python3 \
             zlib1g-dev \
+            libcurl4-openssl-dev \
             libvulkan-dev \
             vulkan-validationlayers \
             glslang-tools \

@@ -45,6 +45,13 @@ do
         -- that use the Rive scripting feature actually execute their logic
         -- at render time instead of being parsed-but-inert.
         'luau_vm',
+        -- libcurl: in-process HTTP client for fetching CDN-hosted Rive
+        -- assets (fonts/images). Linked as a library so we never shell out
+        -- to a `curl` executable — the prod runtime image is shell-less and
+        -- has no curl binary. macOS resolves this against the system
+        -- libcurl in the SDK; Linux needs libcurl dev headers/libs at build
+        -- (libcurl4-openssl-dev) — see scripts/build-native.sh & CI.
+        'curl',
     })
 
     filter({ 'options:not no_rive_png' })
