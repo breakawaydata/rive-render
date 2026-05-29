@@ -60,9 +60,9 @@ static size_t curlWriteToVector(char* ptr, size_t size, size_t nmemb, void* user
 // what executables exist in the runtime image.
 static std::vector<uint8_t> fetchUrl(const std::string& url)
 {
-    static std::once_flag initFlag;
-    std::call_once(initFlag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
-
+    // curl_global_init / curl_global_cleanup are handled once in main() before
+    // any threads start (libcurl's global init is not thread-safe). Here we
+    // only create a per-call easy handle, which is safe on the server thread.
     CURL* curl = curl_easy_init();
     if (!curl)
         return {};
