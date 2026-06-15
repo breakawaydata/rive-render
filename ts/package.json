@@ -35,11 +35,11 @@
     "registry": "https://npm.pkg.github.com"
   },
   "devDependencies": {
-    "@eslint/js": "^9.0.0",
+    "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
     "@types/jest-image-snapshot": "^6.4.1",
     "@types/node": "^22.19.21",
-    "eslint": "^9.0.0",
+    "eslint": "^10.5.0",
     "jest": "^30.4.2",
     "jest-image-snapshot": "^6.5.2",
     "ts-jest": "^29.4.11",
