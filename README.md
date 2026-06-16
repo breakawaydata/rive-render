@@ -317,8 +317,9 @@ cd ts && npm run test:update
 git clone https://github.com/breakawaydata/rive-render.git
 cd rive-render
 
-# Clone rive-runtime
-git clone --depth 1 https://github.com/rive-app/rive-runtime.git deps/rive-runtime
+# Clone rive-runtime (pinned ref tracked in native/rive-runtime.version)
+git clone --depth 1 --branch "$(cat native/rive-runtime.version)" \
+  https://github.com/rive-app/rive-runtime.git deps/rive-runtime
 
 # Build the native binary
 # (on Linux this also builds SwiftShader the first time, ~15-20 min;

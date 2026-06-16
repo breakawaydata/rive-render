@@ -44,7 +44,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Clone rive-runtime
-        run: git clone --depth 1 https://github.com/rive-app/rive-runtime.git deps/rive-runtime
+        run: |
+          git clone --depth 1 --branch "$(cat native/rive-runtime.version)" \
+            https://github.com/rive-app/rive-runtime.git deps/rive-runtime
 
       - name: Install dependencies (Linux)
         if: matrix.platform == 'linux'
