@@ -70,8 +70,9 @@ jobs:
         id: cache-rive-runtime
         with:
           path: deps/rive-runtime
-          # Keyed on the pinned ref so a version bump invalidates the cache.
-          key: rive-runtime-linux-${{ hashFiles('native/rive-runtime.version') }}
+          # Keyed on the pinned ref + local patches so a version bump or a
+          # patch change invalidates the cache (forces a fresh, re-patched clone).
+          key: rive-runtime-linux-${{ hashFiles('native/rive-runtime.version', 'native/rive-runtime-patches/**') }}
 
       - name: Clone rive-runtime
         if: steps.cache-rive-runtime.outputs.cache-hit != 'true'
@@ -85,8 +86,9 @@ jobs:
         id: cache-native-build
         with:
           path: native/out
-          # Include the pinned rive-runtime ref so bumping it forces a native rebuild.
-          key: native-build-linux-${{ hashFiles('native/src/**', 'native/premake5.lua', 'scripts/build-native.sh', 'native/rive-runtime.version') }}
+          # Include the pinned rive-runtime ref + local patches so bumping the
+          # ref or changing a patch forces a native rebuild.
+          key: native-build-linux-${{ hashFiles('native/src/**', 'native/premake5.lua', 'scripts/build-native.sh', 'native/rive-runtime.version', 'native/rive-runtime-patches/**') }}
 
       - name: Build native binary
         if: steps.cache-native-build.outputs.cache-hit != 'true'
