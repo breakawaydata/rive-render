@@ -42,6 +42,27 @@ fi
 
 echo "==> Using premake5 at: $PREMAKE5"
 
+# --- Apply rive-render-maintained patches to the pinned rive-runtime ---
+# These are local fixes carried on top of the upstream tag in
+# native/rive-runtime.version (e.g. the deferred-VM scripting fix). Applied
+# idempotently so re-running the build (or a cached deps/rive-runtime) is safe.
+PATCH_DIR="$PROJECT_ROOT/native/rive-runtime-patches"
+if [ -d "$PATCH_DIR" ]; then
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -e "$patch" ] || continue
+        if git -C "$RIVE_RUNTIME" apply --check "$patch" 2>/dev/null; then
+            git -C "$RIVE_RUNTIME" apply "$patch"
+            echo "==> Applied rive-runtime patch: $(basename "$patch")"
+        elif git -C "$RIVE_RUNTIME" apply --reverse --check "$patch" 2>/dev/null; then
+            echo "==> rive-runtime patch already applied: $(basename "$patch")"
+        else
+            echo "ERROR: rive-runtime patch does not apply cleanly: $(basename "$patch")" >&2
+            echo "       (rive-runtime $(cat "$PROJECT_ROOT/native/rive-runtime.version") may have moved; refresh the patch)" >&2
+            exit 1
+        fi
+    done
+fi
+
 # --- Build SwiftShader on Linux so it ships next to the binary ---
 # Set RIVE_RENDER_SKIP_SWIFTSHADER=1 to skip. CI uses this in pull-
 # request workflows so the main build stays fast; the release workflow

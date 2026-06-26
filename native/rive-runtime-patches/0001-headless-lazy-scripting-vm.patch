@@ -1,0 +1,42 @@
+diff --git a/src/command_server.cpp b/src/command_server.cpp
+index 410dfcb..f54c415 100644
+--- a/src/command_server.cpp
++++ b/src/command_server.cpp
+@@ -644,23 +644,24 @@ bool CommandServer::processCommands()
+                 commandStream >> requestId;
+                 m_commandQueue->m_byteVectors >> rivBytes;
+                 lock.unlock();
+-#ifdef WITH_RIVE_SCRIPTING
+-                auto scriptingContext =
+-                    std::make_unique<CPPRuntimeScriptingContext>(m_factory);
+-                scriptingContext->setRenderContext(m_factory);
+-                auto vm = make_rcp<ScriptingVM>(std::move(scriptingContext));
+-                rcp<rive::File> file = rive::File::import(rivBytes,
+-                                                          m_factory,
+-                                                          nullptr,
+-                                                          m_fileAssetLoader,
+-                                                          vm.get());
+-
+-#else
++                // [rive-render patch] Import without an eager per-file
++                // ScriptingVM. Upstream runtime-v0.1.107 began constructing the
++                // scripting VM here, inside File::import. But rive-render binds
++                // the view-model instance AFTER import (see queue_renderer:
++                // createDefaultInstance -> bindViewModelInstance -> advance).
++                // Eagerly initializing scripts against the not-yet-bound VM
++                // makes data-bound lookups resolve to nil — e.g. stat-card.v4's
++                // `StatListAutoCardType` reading `statItems*` throws
++                // "attempt to index nil" and never sets `card_type`, so
++                // multi-stat cards render the wrong background. Importing
++                // without a VM keeps the pre-0.1.107 lazy setup, so scripts
++                // initialize after the view model is bound. Remove this patch
++                // once the runtime supports deferred VM binding with the
++                // eager-VM path (tracked upstream).
+                 rcp<rive::File> file = rive::File::import(rivBytes,
+                                                           m_factory,
+                                                           nullptr,
+                                                           m_fileAssetLoader);
+-#endif
+ 
+                 if (file != nullptr)
+                 {
