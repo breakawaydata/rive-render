@@ -25,7 +25,8 @@ struct ListItemConfig;
 
 struct ViewModelPropertyValue
 {
-    // "string", "number", "boolean", "color", "enum", "image", "list"
+    // "string", "number", "boolean", "color", "enum", "image", "font",
+    // "trigger", "list"
     std::string type;
     std::string stringValue;
     float numberValue = 0.0f;
@@ -62,15 +63,18 @@ struct Config
     std::string rivFile;
     std::string artboard;
     std::string stateMachine;
-    int width = 800;
-    int height = 600;
+    // Canvas size in pixels. <= 0 means "use the artboard's size" (see
+    // resolveCanvasSize); with one side given the other keeps the aspect.
+    int width = 0;
+    int height = 0;
 
     ScreenshotConfig screenshot;
     OutputConfig output;
     ViewModelDataConfig viewModelData;
     AssetConfig assets;
 
-    // State machine input overrides
+    // State machine input overrides. A `true` bool targeting a trigger input
+    // fires it.
     std::map<std::string, float> stateMachineNumberInputs;
     std::map<std::string, bool> stateMachineBoolInputs;
 

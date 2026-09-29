@@ -10,22 +10,26 @@ TARGET_ARCH="${2:-}"
 OS="$(uname -s)"
 
 # --- Download premake5 if needed ---
+# Keep in step with rive-runtime's build/build_rive.sh (RIVE_PREMAKE_TAG).
+PREMAKE_VERSION="5.0.0-beta7"
 PREMAKE5="$PROJECT_ROOT/deps/bin/premake5"
-if [ ! -x "$PREMAKE5" ]; then
+PREMAKE_STAMP="$PROJECT_ROOT/deps/bin/.premake-version"
+if [ ! -x "$PREMAKE5" ] || [ "$(cat "$PREMAKE_STAMP" 2>/dev/null)" != "$PREMAKE_VERSION" ]; then
+    rm -f "$PREMAKE5"
     echo "==> Downloading premake5..."
     mkdir -p "$PROJECT_ROOT/deps/bin"
     HOST_ARCH="$(uname -m)"
     if [ "$OS" = "Darwin" ]; then
-        PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-macosx.tar.gz"
+        PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v$PREMAKE_VERSION/premake-$PREMAKE_VERSION-macosx.tar.gz"
     elif [ "$OS" = "Linux" ] && [ "$HOST_ARCH" = "x86_64" ]; then
-        PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-linux.tar.gz"
+        PREMAKE_URL="https://github.com/premake/premake-core/releases/download/v$PREMAKE_VERSION/premake-$PREMAKE_VERSION-linux.tar.gz"
     elif [ "$OS" = "Linux" ] && [ "$HOST_ARCH" = "aarch64" ]; then
         echo "==> No prebuilt premake5 for Linux ARM64, building from source..."
         PREMAKE_SRC="$PROJECT_ROOT/deps/premake-src"
-        curl -L "https://github.com/premake/premake-core/releases/download/v5.0.0-beta6/premake-5.0.0-beta6-src.zip" -o /tmp/premake-src.zip
+        curl -L "https://github.com/premake/premake-core/releases/download/v$PREMAKE_VERSION/premake-$PREMAKE_VERSION-src.zip" -o /tmp/premake-src.zip
         unzip -q /tmp/premake-src.zip -d "$PREMAKE_SRC"
-        make -C "$PREMAKE_SRC/premake-5.0.0-beta6-src" -f Bootstrap.mak linux
-        cp "$PREMAKE_SRC/premake-5.0.0-beta6-src/bin/release/premake5" "$PREMAKE5"
+        make -C "$PREMAKE_SRC" -f Bootstrap.mak linux
+        cp "$PREMAKE_SRC/bin/release/premake5" "$PREMAKE5"
         chmod +x "$PREMAKE5"
         rm -rf "$PREMAKE_SRC" /tmp/premake-src.zip
     else
@@ -38,6 +42,7 @@ if [ ! -x "$PREMAKE5" ]; then
         curl -L "$PREMAKE_URL" | tar xz -C "$PROJECT_ROOT/deps/bin"
         chmod +x "$PREMAKE5"
     fi
+    echo "$PREMAKE_VERSION" > "$PREMAKE_STAMP"
 fi
 
 echo "==> Using premake5 at: $PREMAKE5"

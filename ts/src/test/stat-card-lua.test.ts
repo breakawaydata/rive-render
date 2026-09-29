@@ -12,19 +12,20 @@ const FIXTURES = resolve(__dirname, "..", "..", "..", "test", "fixtures");
 // which selects the card's background variant. The script's bind -> rebind
 // cycle settles by t=1.0s.
 //
-// Regression guard for the script <-> view-model property bridge. A
-// rive-runtime change at runtime-v0.1.107 (v0.1.106 is the last good release;
-// bisected by build) reworked how scripted view-model properties resolve, and
-// the script's nested-object lookups then returned nil. `sync` died with
-// `attempt to index nil with 'statItems1_N'` for any list with >= 2 items, so
-// `card_type` was never set and every multi-stat card fell back to the wrong
-// default background. NB this is NOT the Luau VM bump: rive_0_35 -> rive_0_36
-// (runtime-v0.1.94) renders these cards correctly and byte-identically.
+// Regression guard for the script <-> view-model property bridge.
+// rive-runtime v0.1.107 (#12717, command-server canvas support) started
+// creating the scripting VM up front and passing it into File::import. The
+// Lua `Data` global (the view-model constructors) was only initialized when
+// File built its own VM, so on the command-server path `Data` was nil and the
+// script died with `attempt to index nil with 'statItems1_N'` for any list
+// with >= 2 items: `card_type` was never set and every multi-stat card fell
+// back to the wrong default background. Fixed upstream in v0.1.156
+// (bea1f528, "ensure lua data is initialized"). NB this was NOT the Luau VM
+// bump: rive_0_35 -> rive_0_36 (runtime-v0.1.94) renders these cards
+// correctly.
 // Single-item ("Key") cards don't touch the statItems slots, which is why a
-// list-count sweep is the discriminating test. These snapshots are rendered
-// against a runtime that runs the script correctly; a future runtime bump that
-// re-breaks the bridge will diverge the >= 2-item snapshots while leaving the
-// 1-item one matching.
+// list-count sweep is the discriminating test: a runtime that re-breaks the
+// bridge diverges the >= 2-item snapshots while the 1-item one still matches.
 const STAT_CARD_RIV = resolve(FIXTURES, "stat_card_lua_list.riv");
 const TMP = "/tmp/rive-statcard-work";
 
@@ -106,7 +107,7 @@ async function renderStatCard(statCount: number): Promise<Buffer> {
   return buf;
 }
 
-describe("Luau stat-card list -> card_type (rive_0_36 regression guard)", () => {
+describe("Luau stat-card list -> card_type (script Data bridge regression guard)", () => {
   // Generous threshold on purpose: this guards a *categorical* failure (the
   // script picks the wrong card_type → a whole different background, ~38% of
   // pixels), not sub-pixel fidelity. 5% easily catches that while tolerating
@@ -118,7 +119,7 @@ describe("Luau stat-card list -> card_type (rive_0_36 regression guard)", () => 
   };
 
   // 1 stat = "Key", 3 = "Multiple", 8 = "Many": one per authored card-type
-  // bucket. Under the rive_0_36 regression the 3- and 8-stat renders collapse
+  // bucket. Under the v0.1.107-v0.1.155 regression the 3- and 8-stat renders collapse
   // to the wrong default background and these snapshots diverge.
   for (const count of [1, 3, 8]) {
     it(`renders the correct background variant for ${count} stat row${count === 1 ? "" : "s"}`, async () => {
