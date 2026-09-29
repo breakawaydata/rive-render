@@ -61,7 +61,11 @@ function sha256(buf: Buffer): string {
 function expectFileToMatchReference(actualPath: string, name: string) {
   const refPath = join(FILE_SNAPSHOTS, name);
   const actual = readFileSync(actualPath);
-  const updating = process.argv.includes("-u") || process.argv.includes("--updateSnapshot");
+  // Jest runs tests in worker processes whose argv never carries `-u`, so
+  // read the update mode from Jest's own snapshot state instead.
+  const updating =
+    (expect.getState().snapshotState as unknown as { _updateSnapshot?: string })
+      ._updateSnapshot === "all";
 
   if (!existsSync(refPath) || updating) {
     copyFileSync(actualPath, refPath);
