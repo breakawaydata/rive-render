@@ -12,6 +12,7 @@
  * outputs JSON result to stdout.
  */
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -48,16 +49,55 @@ static std::string readStdin()
     return ss.str();
 }
 
+static std::string jsonEscape(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (unsigned char c : in)
+    {
+        switch (c)
+        {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (c < 0x20)
+            {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            }
+            else
+                out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
 static void outputJson(bool success, const std::string& outputPath = "", int frameCount = 0,
-                       const std::string& error = "")
+                       const std::string& error = "", int width = 0, int height = 0)
 {
     std::cout << "{\"success\":" << (success ? "true" : "false");
     if (!outputPath.empty())
-        std::cout << ",\"outputPath\":\"" << outputPath << "\"";
+        std::cout << ",\"outputPath\":\"" << jsonEscape(outputPath) << "\"";
     if (frameCount > 0)
         std::cout << ",\"frameCount\":" << frameCount;
+    if (width > 0 && height > 0)
+        std::cout << ",\"width\":" << width << ",\"height\":" << height;
     if (!error.empty())
-        std::cout << ",\"error\":\"" << error << "\"";
+        std::cout << ",\"error\":\"" << jsonEscape(error) << "\"";
     std::cout << "}" << std::endl;
 }
 
@@ -98,6 +138,9 @@ int main(int argc, char* argv[])
 
         auto config = Config::parse(jsonStr);
         auto rivBytes = readFileBytes(config.rivFile);
+        resolveCanvasSize(config, rivBytes);
+        const int w = config.width;
+        const int h = config.height;
 
         auto result = renderWithQueue(config, rivBytes);
 
@@ -109,7 +152,7 @@ int main(int argc, char* argv[])
                 return 1;
             }
             writePng(config.screenshot.path, config.width, config.height, result.frames[0]);
-            outputJson(true, config.screenshot.path, 1);
+            outputJson(true, config.screenshot.path, 1, "", w, h);
             return 0;
         }
 
@@ -124,19 +167,21 @@ int main(int argc, char* argv[])
                     return 1;
                 }
                 writePng(config.output.path, config.width, config.height, result.frames[0]);
-                outputJson(true, config.output.path, 1);
+                outputJson(true, config.output.path, 1, "", w, h);
             }
             else if (format == "gif")
             {
                 writeGif(config.output.path, config.width, config.height, config.output.fps,
                          result.frames, config.ffmpegPath);
-                outputJson(true, config.output.path, static_cast<int>(result.frames.size()));
+                outputJson(true, config.output.path, static_cast<int>(result.frames.size()), "", w,
+                           h);
             }
             else if (format == "mp4" || format == "webm")
             {
                 writeVideo(config.output.path, config.width, config.height, config.output.fps,
                            result.frames, format, config.ffmpegPath);
-                outputJson(true, config.output.path, static_cast<int>(result.frames.size()));
+                outputJson(true, config.output.path, static_cast<int>(result.frames.size()), "", w,
+                           h);
             }
             else
             {

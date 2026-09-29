@@ -56,6 +56,16 @@ export type PropertyValue =
    */
   | { type: "image"; value: string }
   /**
+   * Bind a ViewModel font-property (sets `ViewModelInstanceAssetFont`).
+   * `value` is an absolute filesystem path to a TTF/OTF font file.
+   */
+  | { type: "font"; value: string }
+  /**
+   * Fire a ViewModel trigger-property once, after the view model is bound
+   * and before the first frame advances.
+   */
+  | { type: "trigger" }
+  /**
    * Bind a ViewModel data-list property (sets `ViewModelInstanceList`).
    * Each entry instantiates a ViewModelInstance and is appended to the
    * list in array order. Existing rows on the underlying instance are
@@ -86,10 +96,14 @@ export interface RiveRenderConfig {
   artboard?: string;
   /** State machine name (optional, uses default) */
   stateMachine?: string;
-  /** Canvas width in pixels */
-  width: number;
-  /** Canvas height in pixels */
-  height: number;
+  /**
+   * Canvas width in pixels. If omitted, the artboard's own size is used;
+   * if only one of width/height is given, the other follows the artboard's
+   * aspect ratio. The resolved size is reported in `RenderResult`.
+   */
+  width?: number;
+  /** Canvas height in pixels (see `width`). */
+  height?: number;
   /** Screenshot config (mutually exclusive with output) */
   screenshot?: ScreenshotOptions;
   /** Animation output config (mutually exclusive with screenshot) */
@@ -98,7 +112,10 @@ export interface RiveRenderConfig {
   viewModelData?: ViewModelDataConfig;
   /** Referenced assets to load */
   assets?: AssetConfig;
-  /** State machine input overrides */
+  /**
+   * State machine input overrides. Numbers set number inputs, booleans set
+   * boolean inputs; `true` on a trigger input fires it.
+   */
   stateMachineInputs?: Record<string, boolean | number>;
   /** Path to ffmpeg binary (for video output) */
   ffmpegPath?: string;
@@ -108,5 +125,9 @@ export interface RenderResult {
   success: boolean;
   outputPath?: string;
   frameCount?: number;
+  /** Canvas width actually rendered (useful when `width` was omitted). */
+  width?: number;
+  /** Canvas height actually rendered. */
+  height?: number;
   error?: string;
 }

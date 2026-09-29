@@ -31,6 +31,10 @@ do
         'src/output_png.cpp',
         'src/output_video.cpp',
         'src/queue_renderer.cpp',
+        -- NoOpFactory: measures the artboard for auto canvas sizing without
+        -- touching the GPU (see resolveCanvasSize). Lives in rive-runtime's
+        -- utils/, which isn't part of librive.
+        RIVE_RUNTIME_DIR .. '/utils/no_op_factory.cpp',
     })
 
     links({

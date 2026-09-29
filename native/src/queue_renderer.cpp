@@ -2,14 +2,20 @@
 #include "headless_renderer.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 
 #include <curl/curl.h>
+
+#include "utils/no_op_factory.hpp"
 
 #include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_input_instance.hpp"
@@ -20,11 +26,15 @@
 #include "rive/command_queue.hpp"
 #include "rive/command_server.hpp"
 #include "rive/file.hpp"
+#include "rive/file_asset_loader.hpp"
+#include "rive/logging_scripting_context.hpp"
 #include "rive/renderer.hpp"
 #include "rive/simple_array.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_asset_font_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_asset_image_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_list_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_instance_runtime.hpp"
+#include "rive/viewmodel/runtime/viewmodel_instance_trigger_runtime.hpp"
 #include "rive/viewmodel/runtime/viewmodel_runtime.hpp"
 
 using namespace rive;
@@ -90,10 +100,10 @@ static std::vector<uint8_t> fetchUrl(const std::string& url)
 
 // Build a RiveCDN URL from a FileAsset's cdnBaseUrl + cdnUuidStr.
 // Returns empty string if the asset has no CDN reference.
-static std::string cdnUrlFor(rive::FileAsset* asset)
+static std::string cdnUrlFor(const rive::FileAsset& asset)
 {
-    auto cdnBase = asset->cdnBaseUrl();
-    auto cdnUuid = asset->cdnUuidStr();
+    auto cdnBase = asset.cdnBaseUrl();
+    auto cdnUuid = asset.cdnUuidStr();
     if (cdnBase.empty() || cdnUuid.empty())
         return {};
     std::string url = cdnBase;
@@ -103,20 +113,91 @@ static std::string cdnUrlFor(rive::FileAsset* asset)
     return url;
 }
 
-// Walk a property tree and collect every `image` property's filesystem path.
-// Recurses through nested list rows so a `{ type: "image" }` payload anywhere
-// in the tree gets pre-decoded.
-static void collectImagePaths(const std::map<std::string, ViewModelPropertyValue>& properties,
-                              std::vector<std::string>& outPaths)
+// Strip a trailing file extension: "flower-45020.png" -> "flower-45020".
+static std::string stripExtension(const std::string& key)
+{
+    auto dot = key.rfind('.');
+    return dot == std::string::npos ? key : key.substr(0, dot);
+}
+
+// Resolves every image/font asset in the .riv at import time. Passed to the
+// CommandServer as its internal loader, which rive-runtime consults *before*
+// its own command-queue global-asset handling, with the asset's in-band bytes
+// (if any) and CDN reference in hand. Handles, in order:
+//
+//   1. Caller overrides keyed by uniqueName ("flower-45020", with or without
+//      the file extension). These replace the asset even when the .riv embeds
+//      it. rive-runtime >= v0.1.4xx stopped letting global assets override
+//      embedded ones, so this loader is what keeps `assets.images` /
+//      `assets.fonts` able to swap embedded art the way they always could.
+//   2. Caller overrides keyed by the bare asset name ("flower"), for assets
+//      with no in-band bytes (referenced / CDN-hosted slots) only.
+//   3. CDN-hosted assets with no override: fetched in-process via libcurl.
+//
+// Everything else (embedded, no override) returns false so the importer
+// decodes the in-band bytes as normal.
+class RenderAssetLoader : public FileAssetLoader
+{
+  public:
+    RenderAssetLoader(const AssetConfig& assets)
+    {
+        for (auto& [name, path] : assets.images)
+            m_images[stripExtension(name)] = readAssetFile(path);
+        for (auto& [name, path] : assets.fonts)
+            m_fonts[stripExtension(name)] = readAssetFile(path);
+    }
+
+    bool loadContents(FileAsset& asset, Span<const uint8_t> inBandBytes, Factory* factory) override
+    {
+        const bool isImage = asset.is<ImageAsset>();
+        const bool isFont = asset.is<FontAsset>();
+        if (!isImage && !isFont)
+            return false;
+        auto& overrides = isImage ? m_images : m_fonts;
+
+        auto it = overrides.find(asset.uniqueName());
+        if (it == overrides.end() && inBandBytes.empty())
+            it = overrides.find(asset.name());
+        if (it != overrides.end())
+            return decode(asset, it->second, factory);
+
+        if (!inBandBytes.empty())
+            return false;
+        auto url = cdnUrlFor(asset);
+        if (url.empty())
+            return false;
+        auto bytes = fetchUrl(url);
+        // Tiny bodies are error pages / empty responses, never a real asset.
+        if (bytes.size() <= 100)
+            return false;
+        return decode(asset, bytes, factory);
+    }
+
+  private:
+    static bool decode(FileAsset& asset, const std::vector<uint8_t>& bytes, Factory* factory)
+    {
+        SimpleArray<uint8_t> arr(bytes.data(), bytes.size());
+        return asset.decode(arr, factory);
+    }
+
+    std::map<std::string, std::vector<uint8_t>> m_images;
+    std::map<std::string, std::vector<uint8_t>> m_fonts;
+};
+
+// Walk a property tree and collect every filesystem path referenced by a
+// property of `type` ("image" / "font"). Recurses through nested list rows so
+// a payload anywhere in the tree gets pre-decoded.
+static void collectAssetPaths(const std::map<std::string, ViewModelPropertyValue>& properties,
+                              const char* type, std::vector<std::string>& outPaths)
 {
     for (auto& [_, prop] : properties)
     {
-        if (prop.type == "image" && !prop.stringValue.empty())
+        if (prop.type == type && !prop.stringValue.empty())
             outPaths.push_back(prop.stringValue);
         else if (prop.type == "list")
         {
             for (auto& item : prop.listValue)
-                collectImagePaths(item.properties, outPaths);
+                collectAssetPaths(item.properties, type, outPaths);
         }
     }
 }
@@ -136,26 +217,29 @@ static rive::ViewModelRuntime* resolveViewModelRuntime(rive::File* file,
         vm = file->viewModelByName(vmName);
     if (!vm && artboard)
         vm = file->defaultArtboardViewModel(artboard);
-    if (!vm)
-    {
-        auto* raw = file->viewModel(0);
-        vm = raw ? file->viewModelByName(raw->name()) : nullptr;
-    }
+    if (!vm && file->viewModelCount() > 0)
+        vm = file->viewModelByIndex(0);
     return vm;
 }
 
-// Apply a property map to a ViewModelInstanceRuntime. Used by the runOnce
-// direct path. Recursively descends into list children — each list row gets
-// a freshly created VM instance, has its own properties applied, and is
-// appended to the parent list.
-//
-// `imageHandles` maps the raw image-path string supplied in the payload to
-// the decoded handle on the server. Images must have been decoded ahead of
-// time (server-thread `getImage(handle)`) so this function is purely a
-// dispatch.
+// Decoded images/fonts for `{ type: "image" | "font" }` VM properties, keyed by
+// the filesystem path supplied in the payload. Resolved to raw pointers on the
+// server thread (via CommandServer::getImage / getFont) before properties are
+// applied, so applyPropertiesDirect is purely a dispatch.
+struct DecodedVmAssets
+{
+    std::map<std::string, rive::RenderImage*> images;
+    std::map<std::string, rive::Font*> fonts;
+};
+
+// Apply a property map to a ViewModelInstanceRuntime on the server thread.
+// Recursively descends into list children — each list row gets a freshly
+// created VM instance, has its own properties applied, and is appended to the
+// parent list. Triggers are skipped here; they fire after binding (see
+// fireTriggers) so the bound state machine observes them.
 static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRuntime* inst,
                                   const std::map<std::string, ViewModelPropertyValue>& properties,
-                                  const std::map<std::string, rive::RenderImage*>& imageByPath)
+                                  const DecodedVmAssets& decoded)
 {
     if (!inst)
         return;
@@ -189,10 +273,15 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
         else if (prop.type == "image")
         {
             auto* p = inst->propertyImage(path);
-            if (!p)
-                continue;
-            auto it = imageByPath.find(prop.stringValue);
-            if (it != imageByPath.end() && it->second)
+            auto it = decoded.images.find(prop.stringValue);
+            if (p && it != decoded.images.end() && it->second)
+                p->value(it->second);
+        }
+        else if (prop.type == "font")
+        {
+            auto* p = inst->propertyFont(path);
+            auto it = decoded.fonts.find(prop.stringValue);
+            if (p && it != decoded.fonts.end() && it->second)
                 p->value(it->second);
         }
         else if (prop.type == "list")
@@ -227,10 +316,25 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
                                                       : rowVm->createDefaultInstance();
                 if (!rowInst)
                     continue;
-                applyPropertiesDirect(file, rowInst.get(), item.properties, imageByPath);
+                applyPropertiesDirect(file, rowInst.get(), item.properties, decoded);
                 listProp->addInstance(rowInst.get());
             }
         }
+    }
+}
+
+// Fire every top-level `{ type: "trigger" }` property. Runs after the
+// instance is bound so the state machine's data-bound transitions and
+// listeners see the trigger on their next advance.
+static void fireTriggers(rive::ViewModelInstanceRuntime* inst,
+                         const std::map<std::string, ViewModelPropertyValue>& properties)
+{
+    for (auto& [path, prop] : properties)
+    {
+        if (prop.type != "trigger")
+            continue;
+        if (auto* p = inst->propertyTrigger(path))
+            p->trigger();
     }
 }
 
@@ -253,7 +357,7 @@ class QueueFileListener : public CommandQueue::FileListener
 
 // Wait for a condition, pumping messages on the queue
 template <typename Pred>
-static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int timeoutMs = 10000)
+static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int timeoutMs)
 {
     auto start = std::chrono::steady_clock::now();
     while (!pred())
@@ -269,154 +373,124 @@ static void waitFor(rcp<CommandQueue>& queue, Pred pred, const char* what, int t
     queue->processMessages();
 }
 
+// Run `fn` on the server thread and block until it has finished. Any
+// exception it throws is rethrown on the calling thread.
+static void runSync(rcp<CommandQueue>& queue, std::function<void(CommandServer*)> fn)
+{
+    std::promise<void> done;
+    auto future = done.get_future();
+    queue->runOnce(
+        [&fn, &done](CommandServer* srv)
+        {
+            try
+            {
+                fn(srv);
+                done.set_value();
+            }
+            catch (...)
+            {
+                done.set_exception(std::current_exception());
+            }
+        });
+    future.get();
+}
+
+// Route Luau console output and script errors to stderr so stdout carries
+// only the JSON result line.
+static ScriptingContextFactory stderrScriptingContextFactory()
+{
+    return makeLoggingScriptingContextFactory(
+        [](ScriptingLogLevel level, const char* data, size_t length)
+        {
+            const char* prefix = level == ScriptingLogLevel::error  ? "[rive script error] "
+                                 : level == ScriptingLogLevel::warn ? "[rive script warn] "
+                                                                    : "[rive script] ";
+            std::fprintf(stderr, "%s%.*s\n", prefix, static_cast<int>(length), data);
+        });
+}
+
+void resolveCanvasSize(Config& config, const std::vector<uint8_t>& rivBytes)
+{
+    if (config.width > 0 && config.height > 0)
+        return;
+
+    // Import on a throwaway no-op factory just to read the artboard bounds.
+    // Assets are left unresolved (no loader) since only geometry is needed.
+    NoOpFactory factory;
+    auto file = File::import(rivBytes, &factory);
+    if (!file)
+        throw std::runtime_error("Failed to load .riv while measuring artboard size");
+    auto artboard =
+        config.artboard.empty() ? file->artboardDefault() : file->artboardNamed(config.artboard);
+    if (!artboard)
+        throw std::runtime_error("Artboard not found: " + config.artboard);
+
+    const float abWidth = artboard->width();
+    const float abHeight = artboard->height();
+    if (abWidth <= 0 || abHeight <= 0)
+        throw std::runtime_error("Artboard has no size; pass width and height explicitly");
+
+    // Only one dimension given: keep the artboard's aspect ratio.
+    if (config.width > 0)
+        config.height = static_cast<int>(std::lround(config.width * abHeight / abWidth));
+    else if (config.height > 0)
+        config.width = static_cast<int>(std::lround(config.height * abWidth / abHeight));
+    else
+    {
+        config.width = static_cast<int>(std::lround(abWidth));
+        config.height = static_cast<int>(std::lround(abHeight));
+    }
+}
+
 QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes)
 {
     // 1. Create headless renderer
     HeadlessRenderer headless(config.width, config.height, config.swiftshader);
 
-    // 2. Create queue + server.
-    //
-    // Heap-allocated and intentionally leaked: ~CommandServer() walks the live
-    // artboard graph via rive-runtime's destructor chain, which null-derefs on
-    // some .riv files that contain a NestedArtboard with ScriptInputs. The
-    // render itself succeeds (frames are captured), but the crash during
-    // teardown means the caller never gets to write the PNG.
-    //
-    // This binary is short-lived — exit() reclaims the memory — so the leak
-    // is strictly bounded. If rive-runtime fixes the teardown bug upstream
-    // this can revert to stack allocation.
+    // 2. Create queue + server. The server's internal asset loader resolves
+    //    caller asset overrides and CDN-hosted assets during File::import
+    //    (see RenderAssetLoader). It reads every override file up front, so
+    //    a bad asset path fails here, before the server thread exists.
     auto queue = make_rcp<CommandQueue>();
-    auto* server = new CommandServer(queue, headless.renderContext());
+    auto server = std::make_unique<CommandServer>(queue, headless.renderContext(),
+                                                  make_rcp<RenderAssetLoader>(config.assets));
 
     // 3. Start server on background thread
-    std::thread serverThread([server]() { server->serveUntilDisconnect(); });
-
-    // CommandFileAssetLoader matches by FileAsset::uniqueName(), which is the
-    // base name plus asset id with the extension stripped (see
-    // file_asset.cpp::uniqueName). Users may supply either:
-    //   (a) the full uniqueFilename ("flower-45020.png") → strip extension
-    //   (b) just the base asset name ("staticImgBG") → needs "-<id>" appended
-    // We register under the stripped key first (handles case a). After the
-    // file loads, a runOnce fallback matches any unresolved assets by base
-    // name (handles case b).
-    auto toUniqueName = [](const std::string& key)
-    {
-        auto dot = key.rfind('.');
-        return dot == std::string::npos ? key : key.substr(0, dot);
-    };
+    std::thread serverThread([&server]() { server->serveUntilDisconnect(); });
 
     try
     {
-        // 4. Decode and register referenced assets BEFORE loading the file.
-        //    Commands are processed in order on the server thread, so the
-        //    CommandFileAssetLoader sees the global registrations when the
-        //    subsequent loadFile runs — no explicit wait required.
-        //    Also keep decoded handles so we can set them as view model
-        //    image properties later (images may be VM-bound, not just
-        //    file-referenced assets).
-        // Decode and register referenced assets BEFORE loading the file.
-        // Also keep decoded handles for VM image property assignment.
-        std::map<std::string, RenderImageHandle> decodedImages;
-        for (auto& [name, path] : config.assets.images)
-        {
-            auto handle = queue->decodeImage(readAssetFile(path));
-            queue->addGlobalImageAsset(toUniqueName(name), handle);
-            decodedImages[name] = handle;
-        }
-        for (auto& [name, path] : config.assets.fonts)
-        {
-            auto handle = queue->decodeFont(readAssetFile(path));
-            queue->addGlobalFontAsset(toUniqueName(name), handle);
-        }
-
-        // 4b. Decode every image referenced by a `{ type: "image" }` VM
-        // property (including those nested inside list rows) into a separate
-        // handle map. These do NOT register as global assets — they bind to
-        // VM image-property slots, not to file-referenced asset slots. The
-        // distinction matches `@rive-app/react-native@0.4.5`'s split between
-        // `RiveImages` (which we model as `assets.images`) and
-        // `ViewModelImageProperty` (which we model as `{ type: "image" }`).
+        // 4. Decode every image/font referenced by a `{ type: "image" | "font" }`
+        //    VM property (including those nested inside list rows). These bind
+        //    to VM property slots, not to file asset slots — the same split as
+        //    `@rive-app/react-native`'s `RiveImages` (our `assets.images`) vs.
+        //    `ViewModelImageProperty` (our `{ type: "image" }`).
         std::map<std::string, RenderImageHandle> vmImageHandles;
+        std::map<std::string, FontHandle> vmFontHandles;
         {
-            std::vector<std::string> vmImagePaths;
-            collectImagePaths(config.viewModelData.properties, vmImagePaths);
-            for (auto& path : vmImagePaths)
-            {
-                if (vmImageHandles.count(path))
-                    continue; // dedupe: same file referenced twice
-                vmImageHandles[path] = queue->decodeImage(readAssetFile(path));
-            }
+            std::vector<std::string> paths;
+            collectAssetPaths(config.viewModelData.properties, "image", paths);
+            for (auto& path : paths)
+                if (!vmImageHandles.count(path)) // dedupe: same file referenced twice
+                    vmImageHandles[path] = queue->decodeImage(readAssetFile(path));
+            paths.clear();
+            collectAssetPaths(config.viewModelData.properties, "font", paths);
+            for (auto& path : paths)
+                if (!vmFontHandles.count(path))
+                    vmFontHandles[path] = queue->decodeFont(readAssetFile(path));
         }
 
-        // 5. Load file
+        // 5. Load file. Generous timeout: CDN-hosted assets are downloaded
+        //    during import by RenderAssetLoader.
         QueueFileListener fileListener;
-        auto fileHandle =
-            queue->loadFile(std::vector<uint8_t>(rivBytes.begin(), rivBytes.end()), &fileListener);
+        auto fileHandle = queue->loadFile(std::vector<uint8_t>(rivBytes.begin(), rivBytes.end()),
+                                          &fileListener, 0, stderrScriptingContextFactory());
         waitFor(
             queue, [&]() { return fileListener.loaded.load() || fileListener.errored.load(); },
-            "file load");
+            "file load", 120000);
         if (fileListener.errored.load())
         {
             throw std::runtime_error("Failed to load .riv: " + fileListener.errorMsg);
-        }
-
-        // 5b. Fallback asset matching by base name.
-        // The addGlobalImageAsset / addGlobalFontAsset calls above use the
-        // key as-is (possibly stripped of file extension). If the user
-        // supplied just the asset's base name (e.g. "staticImgBG") rather
-        // than the full uniqueFilename ("staticImgBG-4117592.png"), the
-        // CommandFileAssetLoader won't find a match because it looks up by
-        // uniqueName() = name + "-" + assetId. Fix this by iterating the
-        // loaded file's assets on the server thread and directly assigning
-        // decoded images/fonts to any asset whose base name matches a
-        // config key that was not already resolved.
-        if (!decodedImages.empty())
-        {
-            // Build lookup: baseName -> decoded handle (images)
-            std::map<std::string, RenderImageHandle> imageByBaseName;
-            for (auto& [name, handle] : decodedImages)
-            {
-                imageByBaseName[toUniqueName(name)] = handle;
-            }
-            // Build lookup: baseName -> decoded handle (fonts)
-            std::map<std::string, FontHandle> fontByBaseName;
-            for (auto& [name, path] : config.assets.fonts)
-            {
-                // We already decoded fonts above; reconstruct the handle.
-                // Unfortunately we didn't save FontHandles — re-decode is
-                // wasteful. Instead, for fonts we registered them as global
-                // assets which should match if the user supplied the full
-                // uniqueFilename. For the name-only case we'd need the
-                // handle, so let's skip fonts for now (the image case is
-                // the critical fix).
-                (void)name;
-                (void)path;
-            }
-
-            queue->runOnce(
-                [fileHandle, imageByBaseName](CommandServer* srv)
-                {
-                    auto* file = srv->getFile(fileHandle);
-                    if (!file)
-                        return;
-                    auto assets = file->assets();
-                    for (auto& assetRef : assets)
-                    {
-                        auto* asset = assetRef.get();
-                        if (!asset || !asset->is<ImageAsset>())
-                            continue;
-                        auto* imageAsset = asset->as<ImageAsset>();
-                        if (imageAsset->renderImage() != nullptr)
-                            continue;
-                        auto itr = imageByBaseName.find(asset->name());
-                        if (itr != imageByBaseName.end())
-                        {
-                            auto* renderImage = srv->getImage(itr->second);
-                            if (renderImage)
-                                imageAsset->renderImage(ref_rcp(renderImage));
-                        }
-                    }
-                });
         }
 
         // 6. Instantiate artboard.
@@ -435,175 +509,99 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                             ? queue->instantiateDefaultStateMachine(abHandle)
                             : queue->instantiateStateMachineNamed(abHandle, config.stateMachine);
 
-        // 8. Bind view model data (if provided)
-        if (!config.viewModelData.properties.empty() || !decodedImages.empty() ||
-            !vmImageHandles.empty())
-        {
-            // Instantiate a view model instance.
-            //
-            // When viewModel is specified, look up the VM by name.
-            // Otherwise infer from the artboard. Use the named-instance
-            // overload when an instance name is provided, otherwise
-            // create a default instance.
-            auto vmHandle = !config.viewModelData.viewModel.empty()
-                                ? (!config.viewModelData.instance.empty()
-                                       ? queue->instantiateViewModelInstanceNamed(
-                                             fileHandle, config.viewModelData.viewModel,
-                                             config.viewModelData.instance)
-                                       : queue->instantiateDefaultViewModelInstance(
-                                             fileHandle, config.viewModelData.viewModel))
-                            : config.viewModelData.instance.empty()
-                                ? queue->instantiateDefaultViewModelInstance(fileHandle, abHandle)
-                                : queue->instantiateViewModelInstanceNamed(
-                                      fileHandle, abHandle, config.viewModelData.instance);
-
-            // Set properties via queue commands.
-            // Note: `list` properties are NOT applied here. Building list
-            // rows requires `propertyList(...)->addInstance(...)` which is
-            // only callable from the runOnce direct path below — the queue
-            // currently exposes `appendViewModelInstanceListViewModel` for
-            // ViewModel-typed lists but not the per-row property setting
-            // we need for arbitrary nested data. The runOnce pass handles
-            // both image and list bindings.
-            for (auto& [path, prop] : config.viewModelData.properties)
-            {
-                if (prop.type == "string")
-                    queue->setViewModelInstanceString(vmHandle, path, prop.stringValue);
-                else if (prop.type == "number")
-                    queue->setViewModelInstanceNumber(vmHandle, path, prop.numberValue);
-                else if (prop.type == "boolean")
-                    queue->setViewModelInstanceBool(vmHandle, path, prop.boolValue);
-                else if (prop.type == "color")
-                    queue->setViewModelInstanceColor(vmHandle, path, prop.colorValue);
-                else if (prop.type == "enum")
-                    queue->setViewModelInstanceEnum(vmHandle, path, prop.stringValue);
-                else if (prop.type == "image")
-                {
-                    auto it = vmImageHandles.find(prop.stringValue);
-                    if (it != vmImageHandles.end())
-                        queue->setViewModelInstanceImage(vmHandle, path, it->second);
-                }
-                // `list` is intentionally skipped — handled by runOnce below.
-            }
-
-            // Set view model image properties from referenced asset replacements.
-            for (auto& [name, imgHandle] : decodedImages)
-            {
-                queue->setViewModelInstanceImage(vmHandle, name, imgHandle);
-            }
-
-            // Bind the VM instance to the state machine (also sets
-            // the artboard data context internally).
-            queue->bindViewModelInstance(smHandle, vmHandle);
-
-            // Direct property application on the server thread.
-            // The queue-based set* commands above work when the artboard's
-            // own VM has matching properties. But some artboards (e.g.
-            // cropped wrappers around a "Sport Card" nested artboard) have
-            // a different VM schema — the artboard VM might lack properties
-            // like firstName/lastName that exist on the file-level VM.
-            // To handle both cases, always create an instance from the
-            // file's first VM, set all properties on it directly, and
-            // bind it. This ensures all properties reach the artboard
-            // regardless of which VM schema it was originally linked to.
-            queue->runOnce(
-                [fileHandle, abHandle, smHandle, &config, &vmImageHandles](CommandServer* srv)
+        // 8. Bind view model data and apply state machine inputs, all on the
+        //    server thread before any time advances. Lists, images and fonts
+        //    need the runtime API (per-row property setting isn't exposed as
+        //    queue commands), so everything goes through the same direct path.
+        //
+        //    Only bind when the caller supplied data: binding a default VM
+        //    instance can change how the artboard renders vs. its authored
+        //    defaults, which regression tests rely on as the baseline.
+        //    `assets.images` also triggers a bind, preserving the historical
+        //    behaviour for callers that swap images without VM properties.
+        const bool bindViewModel =
+            !config.viewModelData.properties.empty() || !config.assets.images.empty();
+        runSync(queue,
+                [&](CommandServer* srv)
                 {
                     auto* file = srv->getFile(fileHandle);
-                    if (!file || file->viewModelCount() == 0)
-                        return;
-
-                    auto* artboardForVm = srv->getArtboardInstance(abHandle);
-                    auto* viewModelRuntime = resolveViewModelRuntime(
-                        file, artboardForVm, config.viewModelData.viewModel);
-                    if (!viewModelRuntime)
-                        return;
-
-                    // Use createDefaultInstance() rather than createInstance()
-                    // so file-authored default VM data (including any default
-                    // list rows referenced by an `ArtboardComponentList`
-                    // visual) survives the rebind. `applyPropertiesDirect`
-                    // calls `removeAllInstances()` on each list it touches,
-                    // so caller-supplied list payloads still fully replace
-                    // the defaults — but lists the caller doesn't mention
-                    // keep their authored rows and the artboard renders.
-                    auto inst = viewModelRuntime->createDefaultInstance();
-                    if (!inst)
-                        return;
-
-                    // Resolve image handles into RenderImage* for direct
-                    // assignment via propertyImage()->value(...).
-                    std::map<std::string, rive::RenderImage*> imageByPath;
-                    for (auto& [path, handle] : vmImageHandles)
-                        imageByPath[path] = srv->getImage(handle);
-
-                    applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
-                                          imageByPath);
-
-                    auto* sm = srv->getStateMachineInstance(smHandle);
-                    if (sm)
-                        sm->bindViewModelInstance(inst->instance());
                     auto* artboard = srv->getArtboardInstance(abHandle);
-                    if (artboard)
-                        artboard->bindViewModelInstance(inst->instance());
+                    auto* sm = srv->getStateMachineInstance(smHandle);
+                    if (!file || !artboard)
+                        throw std::runtime_error(config.artboard.empty()
+                                                     ? "File has no default artboard"
+                                                     : "Artboard not found: " + config.artboard);
 
-                    // Force multiple advance cycles so data binds
-                    // propagate through nested artboards. The first
-                    // advance instantiates nested artboard components
-                    // and relays the data context. The second advance
-                    // processes the dirty data binds inside the nested
-                    // artboard (e.g. text runs reading firstName/
-                    // lastName from the VM). Without both, nested text
-                    // renders empty.
-                    for (int i = 0; i < 2; i++)
+                    if (bindViewModel && file->viewModelCount() > 0)
                     {
+                        const auto& vmName = config.viewModelData.viewModel;
+                        const auto& instanceName = config.viewModelData.instance;
+                        auto* viewModelRuntime = resolveViewModelRuntime(file, artboard, vmName);
+                        if (!vmName.empty() && !file->viewModelByName(vmName))
+                            throw std::runtime_error("View model not found: " + vmName);
+                        if (!viewModelRuntime)
+                            throw std::runtime_error("No view model found to bind");
+
+                        // createDefaultInstance (not createInstance) so file-
+                        // authored default VM data — including default list rows
+                        // referenced by an `ArtboardComponentList` — survives the
+                        // bind. applyPropertiesDirect calls removeAllInstances()
+                        // on each list it touches, so caller list payloads still
+                        // fully replace the defaults.
+                        auto inst = instanceName.empty()
+                                        ? viewModelRuntime->createDefaultInstance()
+                                        : viewModelRuntime->createInstanceFromName(instanceName);
+                        if (!inst)
+                            throw std::runtime_error("View model instance not found: " +
+                                                     instanceName);
+
+                        DecodedVmAssets decoded;
+                        for (auto& [path, handle] : vmImageHandles)
+                            decoded.images[path] = srv->getImage(handle);
+                        for (auto& [path, handle] : vmFontHandles)
+                            decoded.fonts[path] = srv->getFont(handle);
+                        applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
+                                              decoded);
+
+                        // The state machine and its artboard share one data
+                        // context, so binding the state machine binds both.
                         if (sm)
-                            sm->advanceAndApply(0.0f);
-                        else if (artboard)
-                            artboard->advance(0.0f);
+                            sm->bindViewModelInstance(inst->instance());
+                        else
+                            artboard->bindViewModelInstance(inst->instance());
+                        fireTriggers(inst.get(), config.viewModelData.properties);
+
+                        // Two zero-dt advances so data binds propagate through
+                        // nested artboards: the first instantiates nested artboard
+                        // components and relays the data context, the second
+                        // processes the dirty data binds inside them (e.g. text
+                        // runs reading firstName/lastName from the VM). Without
+                        // both, nested text renders empty.
+                        for (int i = 0; i < 2; i++)
+                        {
+                            if (sm)
+                                sm->advanceAndApply(0.0f);
+                            else
+                                artboard->advance(0.0f);
+                        }
+                    }
+
+                    if (sm)
+                    {
+                        for (auto& [name, value] : config.stateMachineNumberInputs)
+                            if (auto* input = sm->getNumber(name))
+                                input->value(value);
+                        for (auto& [name, value] : config.stateMachineBoolInputs)
+                        {
+                            if (auto* input = sm->getBool(name))
+                                input->value(value);
+                            // `true` on a trigger input fires it.
+                            else if (value)
+                                if (auto* trigger = sm->getTrigger(name))
+                                    trigger->fire();
+                        }
                     }
                 });
-        }
-
-        // 8b. Apply stateMachineInputs before any advances.
-        // Use a draw callback to access the StateMachineInstance on the server thread,
-        // then wait for it to complete before proceeding to warmup/rendering.
-        if (!config.stateMachineNumberInputs.empty() || !config.stateMachineBoolInputs.empty())
-        {
-            std::mutex inputMtx;
-            std::condition_variable inputCv;
-            bool inputsDone = false;
-
-            auto inputDrawKey = queue->createDrawKey();
-            queue->draw(inputDrawKey,
-                        CommandServerDrawCallback(
-                            [&](DrawKey, CommandServer* srv)
-                            {
-                                auto* sm = srv->getStateMachineInstance(smHandle);
-                                if (sm)
-                                {
-                                    for (auto& [name, value] : config.stateMachineNumberInputs)
-                                    {
-                                        auto* input = sm->getNumber(name);
-                                        if (input)
-                                            input->value(value);
-                                    }
-                                    for (auto& [name, value] : config.stateMachineBoolInputs)
-                                    {
-                                        auto* input = sm->getBool(name);
-                                        if (input)
-                                            input->value(value);
-                                    }
-                                }
-                                std::lock_guard<std::mutex> lock(inputMtx);
-                                inputsDone = true;
-                                inputCv.notify_one();
-                            }));
-
-            // Wait for inputs to be applied before warmup
-            std::unique_lock<std::mutex> lock(inputMtx);
-            inputCv.wait(lock, [&] { return inputsDone; });
-        }
 
         // 9. Determine frame parameters.
         // For screenshots, step at a fixed 60 Hz and advance up to
@@ -692,115 +690,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 queue->runOnce([advanceScene, frameDt](CommandServer* srv)
                                { advanceScene(srv, frameDt); });
             }
-        }
-
-        // Post-warmup pass: download any CDN-hosted assets the file
-        // references, then (optionally) bind view model data. Always runs —
-        // we can't know from config alone whether the .riv references CDN
-        // assets, and the callback is a cheap no-op when there's nothing to
-        // do.
-        {
-            auto* factory = headless.factory();
-            queue->runOnce(
-                [fileHandle, abHandle, smHandle, &config, &vmImageHandles,
-                 factory](CommandServer* srv)
-                {
-                    auto* file = srv->getFile(fileHandle);
-                    if (!file)
-                        return;
-
-                    // Download CDN-hosted fonts and images.
-                    if (factory)
-                    {
-                        auto assets = file->assets();
-                        for (auto& assetRef : assets)
-                        {
-                            auto* asset = assetRef.get();
-                            if (!asset)
-                                continue;
-                            if (asset->is<FontAsset>())
-                            {
-                                auto* fontAsset = asset->as<FontAsset>();
-                                if (fontAsset->font() != nullptr)
-                                    continue;
-                                auto url = cdnUrlFor(fontAsset);
-                                if (url.empty())
-                                    continue;
-                                auto bytes = fetchUrl(url);
-                                if (bytes.size() > 100)
-                                {
-                                    SimpleArray<uint8_t> arr(bytes.data(), bytes.size());
-                                    fontAsset->decode(arr, factory);
-                                }
-                            }
-                            else if (asset->is<ImageAsset>())
-                            {
-                                auto* imageAsset = asset->as<ImageAsset>();
-                                if (imageAsset->renderImage() != nullptr)
-                                    continue;
-                                auto url = cdnUrlFor(imageAsset);
-                                if (url.empty())
-                                    continue;
-                                auto bytes = fetchUrl(url);
-                                if (bytes.size() > 100)
-                                {
-                                    SimpleArray<uint8_t> arr(bytes.data(), bytes.size());
-                                    imageAsset->decode(arr, factory);
-                                }
-                            }
-                        }
-                    }
-
-                    // Only bind a VM instance when the caller supplied data
-                    // to apply. Binding a default VM instance when no props
-                    // are set can change how the artboard renders vs. its
-                    // authored defaults — which regression tests rely on as
-                    // the baseline.
-                    if (config.viewModelData.properties.empty())
-                        return;
-
-                    if (file->viewModelCount() == 0)
-                        return;
-
-                    auto* artboardForVm2 = srv->getArtboardInstance(abHandle);
-                    auto* viewModelRuntime = resolveViewModelRuntime(
-                        file, artboardForVm2, config.viewModelData.viewModel);
-                    if (!viewModelRuntime)
-                        return;
-
-                    // createDefaultInstance preserves any file-default VM
-                    // data (e.g. authored list rows for an
-                    // ArtboardComponentList). User-supplied list payloads
-                    // still fully replace the matching list because
-                    // applyPropertiesDirect calls removeAllInstances first.
-                    auto inst = viewModelRuntime->createDefaultInstance();
-                    if (!inst)
-                        return;
-
-                    std::map<std::string, rive::RenderImage*> imageByPath;
-                    for (auto& [path, handle] : vmImageHandles)
-                        imageByPath[path] = srv->getImage(handle);
-
-                    applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
-                                          imageByPath);
-
-                    auto* sm = srv->getStateMachineInstance(smHandle);
-                    if (sm)
-                        sm->bindViewModelInstance(inst->instance());
-                    auto* artboard = srv->getArtboardInstance(abHandle);
-                    if (artboard)
-                        artboard->bindViewModelInstance(inst->instance());
-
-                    // Two advances: first propagates data context to nested
-                    // artboards, second processes data binds inside them.
-                    for (int i = 0; i < 2; i++)
-                    {
-                        if (sm)
-                            sm->advanceAndApply(0.0f);
-                        else if (artboard)
-                            artboard->advance(0.0f);
-                    }
-                });
         }
 
         // Per-frame render loop. For screenshots this executes exactly once

@@ -52,21 +52,33 @@ export class RiveRenderer {
       proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
 
       proc.on("close", (code) => {
+        // The rive-runtime may print info lines to stdout (e.g. Vulkan GPU
+        // info). The result is always the last line that is a JSON object.
+        const jsonLine = stdout
+          .split("\n")
+          .reverse()
+          .find((line) => line.trimStart().startsWith("{"));
+
         if (code !== 0) {
+          // Prefer the binary's own error message; stderr may only hold
+          // script / driver log noise.
+          let message: string | undefined;
+          try {
+            message = jsonLine
+              ? (JSON.parse(jsonLine) as RenderResult).error
+              : undefined;
+          } catch {
+            // fall through to stderr
+          }
           reject(
             new RiveRenderError(
-              stderr || `rive-render exited with code ${code}`,
+              message || stderr || `rive-render exited with code ${code}`,
               code
             )
           );
           return;
         }
         try {
-          // The rive-runtime may print info lines to stdout (e.g. Vulkan GPU info).
-          // Extract only the JSON line from the output.
-          const jsonLine = stdout
-            .split("\n")
-            .find((line) => line.trimStart().startsWith("{"));
           if (!jsonLine) {
             reject(
               new RiveRenderError(`No JSON found in output: ${stdout}`, code)

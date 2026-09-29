@@ -10,8 +10,10 @@ Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) for G
 - **Animated GIF** with palette optimization and Floyd-Steinberg dithering
 - **MP4/WebM video** via ffmpeg
 - **State machine** and **linear animation** support
-- **View model data binding** for dynamic content
-- **Referenced asset loading** (images, fonts)
+- **View model data binding** for dynamic content: strings, numbers, booleans, colors, enums, images, fonts, triggers and lists
+- **Asset overrides**: swap referenced *or* embedded images/fonts; CDN-hosted assets are fetched automatically
+- **Rive scripting** (Luau) runs at render time; script logs go to stderr
+- **Auto-sizing** to the artboard when width/height are omitted
 - **Multi-threaded rendering** via Rive's `CommandQueue`/`CommandServer` (matches the Rive iOS/Android app runtimes)
 - **Visual regression testing** with jest-image-snapshot
 - Runs natively on **macOS** (Metal) and **Linux** (Vulkan, with optional bundled SwiftShader for headless/CI environments)
@@ -150,6 +152,10 @@ await cli.render({
       // image-property slot — distinct from `assets.images`, which is
       // for replacing referenced .riv assets by name.
       teamLogo: { type: "image", value: "/path/to/team-logo.png" },
+      // Bind a `ViewModelInstanceAssetFont` slot to a local TTF/OTF file.
+      headlineFont: { type: "font", value: "/path/to/Inter-Bold.ttf" },
+      // Fire a trigger once, after binding and before the first frame.
+      celebrate: { type: "trigger" },
       // Bind a DataList VM property. Each entry instantiates a row VM
       // (defaults to the file's first VM if `viewModel` is omitted) and
       // appends it to the list. Per-row property values can include any
@@ -178,9 +184,14 @@ await cli.render({
 });
 ```
 
-### Referenced Assets
+`viewModel` / `instance` select which view model and named instance to bind
+(defaults: the artboard's view model, its default instance). An unknown name
+fails the render with `View model not found: …` / `View model instance not found: …`
+instead of silently rendering defaults.
 
-Load external images and fonts:
+### Assets
+
+Supply images and fonts for the file's image/font assets:
 
 ```typescript
 await cli.render({
@@ -200,6 +211,31 @@ await cli.render({
 });
 ```
 
+Keys are matched against each asset in the `.riv`:
+
+- **Unique name** (`name-assetId`, with or without extension, e.g. `"avatar-45020.png"`) —
+  replaces the asset whether it is referenced, CDN-hosted or embedded in the file.
+- **Bare name** (e.g. `"avatar"`) — replaces referenced / CDN-hosted assets only.
+
+CDN-hosted assets without an override are downloaded while the file loads.
+
+### State Machine Inputs
+
+```typescript
+stateMachineInputs: {
+  progress: 0.5,     // number input
+  isActive: true,    // boolean input
+  "Tap": true,       // trigger input: `true` fires it
+}
+```
+
+### Canvas Size
+
+`width` and `height` are optional in `render()`. Omit both to render at the
+artboard's own size; give one and the other follows the artboard's aspect
+ratio. The size actually rendered is returned as `result.width` / `result.height`.
+(The `screenshot` / `renderGif` / `renderVideo` helpers keep their fixed defaults.)
+
 ### Full Configuration
 
 ```typescript
@@ -207,8 +243,8 @@ interface RiveRenderConfig {
   rivFile: string;
   artboard?: string;
   stateMachine?: string;
-  width: number;
-  height: number;
+  width?: number;   // omit to use the artboard size
+  height?: number;
   screenshot?: { path: string; timestamp?: number };
   output?: {
     format: "png" | "gif" | "mp4" | "webm";
@@ -308,6 +344,7 @@ cd ts && npm run test:update
 - Clang (Apple Clang or LLVM)
 - Python 3 (for shader compilation)
 - glslangValidator (`brew install glslang`)
+- macOS: Xcode's Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`)
 - ffmpeg (for GIF/video output)
 
 ### Build
@@ -317,7 +354,8 @@ cd ts && npm run test:update
 git clone https://github.com/breakawaydata/rive-render.git
 cd rive-render
 
-# Clone rive-runtime (pinned ref tracked in native/rive-runtime.version)
+# Clone rive-runtime (pinned ref tracked in native/rive-runtime.version;
+# build-native.sh applies any native/rive-runtime-patches/*.patch on top)
 git clone --depth 1 --branch "$(cat native/rive-runtime.version)" \
   https://github.com/rive-app/rive-runtime.git deps/rive-runtime
 
@@ -367,7 +405,7 @@ This triggers the release workflow which:
 
 1. **Builds** native binaries on 4 platforms (darwin-arm64, darwin-x64, linux-x64, linux-arm64)
 2. **Tests** using the linux-x64 binary
-3. **Publishes** platform-specific npm packages (`@breakawaydata/rive-render-darwin-arm64`, etc.) and the main `@breakawaydata/rive-render` package to [GitHub Packages](https://npm.pkg.github.com)
+3. **Publishes** the `@breakawaydata/rive-render` package to [GitHub Packages](https://npm.pkg.github.com)
 4. **Creates a GitHub Release** with the native binaries attached
 
 ### Installing from GitHub Packages
@@ -379,7 +417,7 @@ echo "@breakawaydata:registry=https://npm.pkg.github.com" >> .npmrc
 npm install @breakawaydata/rive-render
 ```
 
-The correct platform-specific binary is installed automatically via `optionalDependencies`.
+A `postinstall` script downloads the matching platform binary from the GitHub Release.
 
 ### Updating Test Snapshots
 
@@ -436,7 +474,7 @@ The Rive Skia renderer does not support [feathering](https://rive.app/blog/rive-
 
 ### Rendering pipeline
 
-rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`CommandServer` — the same pattern used by the official Rive iOS and Android runtimes. Referenced assets are decoded and globally registered, the `.riv` file is loaded, an artboard + state machine (or fallback linear animation) is instantiated, and each frame is advanced and rendered inside a draw callback that runs on the server thread. The client thread only submits commands and collects pixel buffers — no Rive object is ever touched from two threads. See [command_queue.hpp](https://github.com/rive-app/rive-runtime/blob/main/include/rive/command_queue.hpp) for the full API surface.
+rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`CommandServer` — the same pattern used by the official Rive iOS and Android runtimes. The `.riv` file is loaded with a custom `FileAssetLoader` that resolves asset overrides and CDN downloads during import, an artboard + state machine (or fallback linear animation) is instantiated, and each frame is advanced and rendered inside a draw callback that runs on the server thread. The client thread only submits commands and collects pixel buffers — no Rive object is ever touched from two threads. See [command_queue.hpp](https://github.com/rive-app/rive-runtime/blob/main/include/rive/command_queue.hpp) for the full API surface.
 
 ## Project Structure
 
