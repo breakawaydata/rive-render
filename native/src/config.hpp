@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,10 +24,14 @@ struct OutputConfig
 // One entry inside a `{ "type": "list" }` PropertyValue.
 struct ListItemConfig;
 
+// The payload of a `{ "type": "artboard" }` PropertyValue: an artboard taken
+// from an extra .riv file, plus the view model data for that artboard.
+struct ArtboardBindingConfig;
+
 struct ViewModelPropertyValue
 {
     // "string", "number", "boolean", "color", "enum", "image", "font",
-    // "trigger", "list"
+    // "trigger", "list", "artboard"
     std::string type;
     std::string stringValue;
     float numberValue = 0.0f;
@@ -36,12 +41,26 @@ struct ViewModelPropertyValue
     // list: child rows, each one becoming a ViewModelInstance bound into
     // the parent VM's list property in vector order.
     std::vector<ListItemConfig> listValue;
+
+    // artboard: which artboard of which extra file to bind, and the nested
+    // view model data. Held by pointer because the type is incomplete here
+    // (it contains a map of ViewModelPropertyValue); null for every other
+    // property type.
+    std::shared_ptr<ArtboardBindingConfig> artboardValue;
 };
 
 struct ListItemConfig
 {
     std::string viewModel;
     std::string instance;
+    std::map<std::string, ViewModelPropertyValue> properties;
+};
+
+struct ArtboardBindingConfig
+{
+    std::string file;     // key into Config::extraFiles
+    std::string artboard; // artboard name inside that file
+    std::string viewModel;
     std::map<std::string, ViewModelPropertyValue> properties;
 };
 
@@ -58,6 +77,14 @@ struct AssetConfig
     std::map<std::string, std::string> fonts;
 };
 
+// A second .riv file whose artboards can be bound into artboard-typed view
+// model properties of the main file.
+struct ExtraFileConfig
+{
+    std::string rivFile;
+    AssetConfig assets;
+};
+
 struct Config
 {
     std::string rivFile;
@@ -72,6 +99,8 @@ struct Config
     OutputConfig output;
     ViewModelDataConfig viewModelData;
     AssetConfig assets;
+    // alias -> extra file; aliases are what artboard properties refer to.
+    std::map<std::string, ExtraFileConfig> extraFiles;
 
     // State machine input overrides. A `true` bool targeting a trigger input
     // fires it.

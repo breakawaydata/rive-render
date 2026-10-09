@@ -10,7 +10,7 @@ Built on the [Rive PLS Renderer](https://github.com/rive-app/rive-runtime) for G
 - **Animated GIF** with palette optimization and Floyd-Steinberg dithering
 - **MP4/WebM video** via ffmpeg
 - **State machine** and **linear animation** support
-- **View model data binding** for dynamic content: strings, numbers, booleans, colors, enums, images, fonts, triggers and lists
+- **View model data binding** for dynamic content: strings, numbers, booleans, colors, enums, images, fonts, triggers, lists and artboards from a second `.riv` file
 - **Asset overrides**: swap referenced *or* embedded images/fonts; CDN-hosted assets are fetched automatically
 - **Rive scripting** (Luau) runs at render time; script logs go to stderr
 - **Auto-sizing** to the artboard when width/height are omitted
@@ -193,6 +193,51 @@ await cli.render({
 fails the render with `View model not found: …` / `View model instance not found: …`
 instead of silently rendering defaults.
 
+### Artboards from a Second File ("Rive on Rive")
+
+A view model property of type artboard can host an artboard from a *second*
+`.riv` file, with that artboard's own view model data. Declare the second file
+under `extraFiles`, then bind it with an `artboard` property value, keyed by
+the artboard property's view model path like every other property type.
+
+`extraFiles` maps an alias of your choosing to a file entry:
+
+| Field | Meaning |
+| --- | --- |
+| `rivFile` | Path to the extra `.riv` file. |
+| `assets` | Optional `images` / `fonts` overrides for this file only. |
+
+An `artboard` property value has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `"artboard"`. |
+| `file` | An alias from `extraFiles`. |
+| `artboard` | Name of the artboard to take from that file. |
+| `viewModel` | Optional view model of the extra file to instantiate. Defaults to the artboard's own view model, then the file's first one. |
+| `properties` | Optional property values for that instance, keyed by view model path. Every property type is accepted: strings, images, fonts, lists, triggers and further `artboard` bindings. |
+
+How it behaves:
+
+- The bound artboard always gets a view model instance created from **its own
+  file**. Without that instance it would read the main file's view models and
+  render empty, so the renderer creates one even when `properties` is omitted.
+- The artboard's first state machine runs inside the host and advances with
+  the main scene, so animated cards animate.
+- Nested triggers fire after the parent view model is bound, like top-level
+  ones.
+- Each file has its own asset override table. Two files that use the same
+  asset name keep their own overrides: the main file's `assets` never reach an
+  extra file, and an extra file's `assets` never reach the main file or another
+  extra file.
+- The `screenshot`, `renderGif` and `renderVideo` helpers take `extraFiles`
+  alongside `assets`.
+
+The render fails with a message naming the property when the alias is not in
+`extraFiles`, the artboard is not in that file, the `viewModel` is not in that
+file, or the main view model has no artboard property at the given path.
+Nothing is skipped silently.
+
 ### Assets
 
 Supply images and fonts for the file's image/font assets:
@@ -266,6 +311,10 @@ interface RiveRenderConfig {
     images?: Record<string, string>;
     fonts?: Record<string, string>;
   };
+  extraFiles?: Record<string, {
+    rivFile: string;
+    assets?: { images?: Record<string, string>; fonts?: Record<string, string> };
+  }>;
   stateMachineInputs?: Record<string, boolean | number>;
   ffmpegPath?: string;
 }
@@ -521,6 +570,8 @@ rive-render/
 +-- test/fixtures/              Test .riv files
 |   +-- basketball.riv          LinearAnimation test fixture
 |   +-- teststatemachine.riv    StateMachine test fixture
+|   +-- databind_external_artboard_{main,child}.riv  "Rive on Rive" fixtures
+|                                (from rive-app/rive-runtime, MIT)
 |
 +-- scripts/
 |   +-- build-native.sh         Full build script

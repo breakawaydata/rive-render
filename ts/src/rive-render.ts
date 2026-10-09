@@ -7,6 +7,7 @@ import type {
   RenderOptions,
   ViewModelDataConfig,
   AssetConfig,
+  ExtraFileConfig,
 } from "./types.js";
 
 export class RiveRenderError extends Error {
@@ -202,6 +203,7 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
+      extraFiles?: Record<string, ExtraFileConfig>;
     },
     renderOptions?: RenderOptions
   ): Promise<RenderResult> {
@@ -218,6 +220,7 @@ export class RiveRenderer {
         },
         viewModelData: options.viewModelData,
         assets: options.assets,
+        extraFiles: options.extraFiles,
       },
       renderOptions
     );
@@ -235,6 +238,7 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
+      extraFiles?: Record<string, ExtraFileConfig>;
     },
     renderOptions?: RenderOptions
   ): Promise<RenderResult> {
@@ -253,6 +257,7 @@ export class RiveRenderer {
         },
         viewModelData: options.viewModelData,
         assets: options.assets,
+        extraFiles: options.extraFiles,
       },
       renderOptions
     );
@@ -271,6 +276,7 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
+      extraFiles?: Record<string, ExtraFileConfig>;
     },
     renderOptions?: RenderOptions
   ): Promise<RenderResult> {
@@ -289,6 +295,7 @@ export class RiveRenderer {
         },
         viewModelData: options.viewModelData,
         assets: options.assets,
+        extraFiles: options.extraFiles,
       },
       renderOptions
     );
