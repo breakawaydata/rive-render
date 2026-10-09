@@ -26,10 +26,12 @@ export class RiveRenderer {
   }
 
   async render(config: RiveRenderConfig): Promise<RenderResult> {
-    // Auto-resolve ffmpeg for video formats
+    // Auto-resolve ffmpeg for every format the native binary encodes with it
     if (
       config.output &&
-      (config.output.format === "mp4" || config.output.format === "webm") &&
+      (config.output.format === "mp4" ||
+        config.output.format === "webm" ||
+        config.output.format === "gif") &&
       !config.ffmpegPath
     ) {
       config = { ...config, ffmpegPath: await resolveFFmpeg() };

@@ -117,6 +117,19 @@ jobs:
         working-directory: ts
         run: npm test
 
+      # rive_render and the TS resolver must work in images with no /bin/sh
+      # (hardened / distroless Node bases): ffmpeg is spawned without a shell.
+      - name: No-shell image check
+        run: |
+          ctx="$RUNNER_TEMP/no-shell"
+          mkdir -p "$ctx/app"
+          cp test/no-shell/Dockerfile "$ctx/"
+          cp test/no-shell/check.js test/fixtures/basketball.riv "$ctx/app/"
+          cp native/out/release/rive_render "$ctx/app/"
+          cp -r ts/dist "$ctx/app/dist"
+          docker build -t rive-render-no-shell "$ctx"
+          docker run --rm rive-render-no-shell
+
       - name: Update snapshots on failure
         if: failure()
         working-directory: ts
