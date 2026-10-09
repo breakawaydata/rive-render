@@ -338,6 +338,12 @@ cd ts && npm run test:update
 
 ## Building from Source
 
+### Finding ffmpeg
+
+GIF, MP4 and WebM output need an ffmpeg binary. The TypeScript API resolves it in this order: the `ffmpegPath` config option, the `FFMPEG_PATH` environment variable, the first executable `ffmpeg` in a `PATH` directory, a copy previously downloaded into the cache directory, and finally a static build downloaded into that cache directory. The cache directory is `~/.rive-render` unless `RIVE_RENDER_CACHE_DIR` names another one. The download is only attempted when the cache directory is writable; otherwise resolution fails with an error that lists every location it tried.
+
+Neither the resolver nor the native binary needs a shell. The resolver scans `PATH` itself instead of running `which`, and the binary starts ffmpeg with `posix_spawnp` and an explicit argument list instead of `popen`, so rendering works in distroless or hardened images with no `/bin/sh`. ffmpeg's stdout is discarded and its stderr is captured; when ffmpeg cannot be started or exits non-zero, the JSON error names the exit status and quotes the end of ffmpeg's stderr.
+
 ### Prerequisites
 
 - macOS or Linux
@@ -491,6 +497,7 @@ rive-render/
 |   |   +-- output_png.*        PNG encoding (stb_image_write)
 |   |   +-- output_gif.*        GIF via ffmpeg
 |   |   +-- output_video.*      MP4/WebM via ffmpeg
+|   |   +-- ffmpeg_process.*    Spawns ffmpeg without a shell
 |   +-- premake5.lua            Build configuration
 |
 +-- ts/                         TypeScript API package
@@ -499,7 +506,7 @@ rive-render/
 |   |   +-- rive-render.ts         Core class (spawns binary, manages I/O)
 |   |   +-- types.ts            TypeScript interfaces
 |   |   +-- binary-resolver.ts  Platform binary resolution
-|   |   +-- ffmpeg-resolver.ts  Auto-download ffmpeg
+|   |   +-- ffmpeg-resolver.ts  Find ffmpeg (PATH scan, cache, download)
 |   |   +-- test/
 |   |       +-- snapshot.test.ts            All tests
 |   |       +-- __image_snapshots__/        Reference PNGs (committed)

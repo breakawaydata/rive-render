@@ -117,7 +117,7 @@ export interface RiveRenderConfig {
    * boolean inputs; `true` on a trigger input fires it.
    */
   stateMachineInputs?: Record<string, boolean | number>;
-  /** Path to ffmpeg binary (for video output) */
+  /** Path to ffmpeg binary (for GIF/MP4/WebM output). When omitted it is resolved from FFMPEG_PATH, then PATH, then a cached/downloaded copy. */
   ffmpegPath?: string;
 }
 

@@ -1,6 +1,7 @@
 #include "output_video.hpp"
 
-#include <cstdio>
+#include "ffmpeg_process.hpp"
+
 #include <sstream>
 #include <stdexcept>
 
@@ -13,13 +14,21 @@ void writeVideo(const std::string& outputPath, int width, int height, float fps,
         throw std::runtime_error("No frames to encode");
     }
 
-    std::ostringstream cmd;
-    cmd << ffmpegPath << " -y"              // overwrite output
-        << " -f rawvideo"                   // input format
-        << " -pix_fmt rgba"                 // pixel format
-        << " -s " << width << "x" << height // frame size
-        << " -r " << fps                    // frame rate
-        << " -i pipe:0";                    // read from stdin
+    // Formatted exactly as the old shell command line streamed them, so ffmpeg sees the same
+    // values (e.g. "29.97", "30").
+    std::ostringstream size;
+    size << width << "x" << height;
+    std::ostringstream rate;
+    rate << fps;
+
+    std::vector<std::string> args = {
+        "-y",                   // overwrite output
+        "-f",       "rawvideo", // input format
+        "-pix_fmt", "rgba",     // pixel format
+        "-s",       size.str(), // frame size
+        "-r",       rate.str(), // frame rate
+        "-i",       "pipe:0",   // read from stdin
+    };
 
     // Force single-threaded encoding for bit-reproducible output.
     // Multi-threaded x264/libvpx rate control reads neighboring macroblocks
@@ -27,55 +36,22 @@ void writeVideo(const std::string& outputPath, int width, int height, float fps,
     // different CPU topologies — CI runs regressed on asset-heavy scenes.
     if (format == "mp4")
     {
-        cmd << " -c:v libx264"
-            << " -pix_fmt yuv420p"
-            << " -preset medium"
-            << " -crf 23"
-            << " -x264-params threads=1:sliced-threads=0";
+        args.insert(args.end(), {"-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium",
+                                 "-crf", "23", "-x264-params", "threads=1:sliced-threads=0"});
     }
     else if (format == "webm")
     {
-        cmd << " -c:v libvpx-vp9"
-            << " -pix_fmt yuv420p"
-            << " -crf 30"
-            << " -b:v 0"
-            << " -threads 1"
-            << " -row-mt 0";
+        args.insert(args.end(), {"-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-crf", "30", "-b:v",
+                                 "0", "-threads", "1", "-row-mt", "0"});
     }
     else
     {
         throw std::runtime_error("Unsupported video format: " + format);
     }
 
-    cmd << " " << outputPath;
-    // Redirect stderr to /dev/null to keep our stdout clean for JSON
-    cmd << " 2>/dev/null";
+    args.push_back(outputPath);
 
-    FILE* pipe = popen(cmd.str().c_str(), "w");
-    if (!pipe)
-    {
-        throw std::runtime_error("Failed to launch ffmpeg: " + ffmpegPath);
-    }
-
-    size_t expectedSize = static_cast<size_t>(width) * height * 4;
-    for (const auto& frame : frames)
-    {
-        if (frame.size() < expectedSize)
-        {
-            pclose(pipe);
-            throw std::runtime_error("Frame pixel buffer too small");
-        }
-        size_t written = fwrite(frame.data(), 1, expectedSize, pipe);
-        if (written != expectedSize)
-        {
-            pclose(pipe);
-            throw std::runtime_error("Failed to write frame data to ffmpeg");
-        }
-    }
-
-    int status = pclose(pipe);
-    if (status != 0)
-    {
-        throw std::runtime_error("ffmpeg exited with error. Is ffmpeg installed and in PATH?");
-    }
+    // No shell: ffmpeg is spawned directly, its stdout goes to /dev/null (our stdout carries the
+    // JSON result) and its stderr is captured for the error message.
+    runFfmpegWithFrames(ffmpegPath, args, width, height, frames, "video encoding");
 }
