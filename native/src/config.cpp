@@ -354,11 +354,34 @@ std::map<std::string, ViewModelPropertyValue> parseViewModelProperties(const std
                     prop.numberValue = parseNumber(s, i);
                 }
             }
+            else if (pkey == "file" || pkey == "artboard" || pkey == "viewModel")
+            {
+                // Artboard bindings: which extra file + artboard to bind, and
+                // which of that file's view models to instantiate for it.
+                if (!prop.artboardValue)
+                    prop.artboardValue = std::make_shared<ArtboardBindingConfig>();
+                auto& target = pkey == "file"       ? prop.artboardValue->file
+                               : pkey == "artboard" ? prop.artboardValue->artboard
+                                                    : prop.artboardValue->viewModel;
+                target = parseString(s, i);
+            }
+            else if (pkey == "properties")
+            {
+                if (!prop.artboardValue)
+                    prop.artboardValue = std::make_shared<ArtboardBindingConfig>();
+                prop.artboardValue->properties = parseViewModelProperties(s, i);
+            }
             else
             {
                 skipValue(s, i);
             }
         }
+
+        // An artboard binding always carries its payload, even when the
+        // caller left every field out, so the renderer can report exactly
+        // which field is missing.
+        if (prop.type == "artboard" && !prop.artboardValue)
+            prop.artboardValue = std::make_shared<ArtboardBindingConfig>();
 
         // Post-process: if type is "color", convert the hex string to uint32_t
         if (prop.type == "color" && !prop.stringValue.empty())
@@ -398,6 +421,120 @@ std::map<std::string, std::string> parseStringMap(const std::string& s, size_t& 
         i = skipWs(s, i);
         auto value = parseString(s, i);
         result[key] = value;
+    }
+    return result;
+}
+
+// Parse an assets sub-object: { "images": { name: path }, "fonts": { ... } }
+AssetConfig parseAssets(const std::string& s, size_t& i)
+{
+    AssetConfig assets;
+    i = skipWs(s, i);
+    if (s[i] != '{')
+        throw std::runtime_error("Expected assets object");
+    ++i;
+    while (true)
+    {
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        if (s[i] == ',')
+            ++i;
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        auto akey = parseString(s, i);
+        i = skipWs(s, i);
+        if (s[i] != ':')
+            throw std::runtime_error("Expected ':'");
+        ++i;
+        i = skipWs(s, i);
+        if (akey == "images")
+            assets.images = parseStringMap(s, i);
+        else if (akey == "fonts")
+            assets.fonts = parseStringMap(s, i);
+        else
+            skipValue(s, i);
+    }
+    return assets;
+}
+
+// Parse the extraFiles sub-object:
+// { "alias": { "rivFile": "...", "assets": { ... } }, ... }
+std::map<std::string, ExtraFileConfig> parseExtraFiles(const std::string& s, size_t& i)
+{
+    std::map<std::string, ExtraFileConfig> result;
+    i = skipWs(s, i);
+    if (s[i] != '{')
+        throw std::runtime_error("Expected extraFiles object");
+    ++i;
+    while (true)
+    {
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        if (s[i] == ',')
+            ++i;
+        i = skipWs(s, i);
+        if (s[i] == '}')
+        {
+            ++i;
+            break;
+        }
+        auto alias = parseString(s, i);
+        if (alias.empty())
+            throw std::runtime_error("extraFiles keys must not be empty");
+        i = skipWs(s, i);
+        if (s[i] != ':')
+            throw std::runtime_error("Expected ':'");
+        ++i;
+        i = skipWs(s, i);
+        if (s[i] != '{')
+            throw std::runtime_error("Expected extraFiles entry object for '" + alias + "'");
+        ++i;
+
+        ExtraFileConfig extra;
+        while (true)
+        {
+            i = skipWs(s, i);
+            if (s[i] == '}')
+            {
+                ++i;
+                break;
+            }
+            if (s[i] == ',')
+                ++i;
+            i = skipWs(s, i);
+            if (s[i] == '}')
+            {
+                ++i;
+                break;
+            }
+            auto ekey = parseString(s, i);
+            i = skipWs(s, i);
+            if (s[i] != ':')
+                throw std::runtime_error("Expected ':'");
+            ++i;
+            i = skipWs(s, i);
+            if (ekey == "rivFile")
+                extra.rivFile = parseString(s, i);
+            else if (ekey == "assets")
+                extra.assets = parseAssets(s, i);
+            else
+                skipValue(s, i);
+        }
+        if (extra.rivFile.empty())
+            throw std::runtime_error("extraFiles entry '" + alias + "' requires rivFile");
+        result[alias] = std::move(extra);
     }
     return result;
 }
@@ -541,40 +678,11 @@ Config Config::parse(const std::string& json)
         }
         else if (key == "assets")
         {
-            // Parse assets sub-object
-            i = skipWs(json, i);
-            if (json[i] != '{')
-                throw std::runtime_error("Expected assets object");
-            ++i;
-            while (true)
-            {
-                i = skipWs(json, i);
-                if (json[i] == '}')
-                {
-                    ++i;
-                    break;
-                }
-                if (json[i] == ',')
-                    ++i;
-                i = skipWs(json, i);
-                if (json[i] == '}')
-                {
-                    ++i;
-                    break;
-                }
-                auto akey = parseString(json, i);
-                i = skipWs(json, i);
-                if (json[i] != ':')
-                    throw std::runtime_error("Expected ':'");
-                ++i;
-                i = skipWs(json, i);
-                if (akey == "images")
-                    cfg.assets.images = parseStringMap(json, i);
-                else if (akey == "fonts")
-                    cfg.assets.fonts = parseStringMap(json, i);
-                else
-                    skipValue(json, i);
-            }
+            cfg.assets = parseAssets(json, i);
+        }
+        else if (key == "extraFiles")
+        {
+            cfg.extraFiles = parseExtraFiles(json, i);
         }
         else if (key == "viewModelData")
         {

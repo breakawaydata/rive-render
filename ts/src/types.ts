@@ -71,7 +71,35 @@ export type PropertyValue =
    * list in array order. Existing rows on the underlying instance are
    * cleared first so the rendered list matches `value` exactly.
    */
-  | { type: "list"; value: ListItemConfig[] };
+  | { type: "list"; value: ListItemConfig[] }
+  /**
+   * Bind an artboard from a second .riv file ("Rive on Rive") into an
+   * artboard-typed ViewModel property (sets `ViewModelInstanceArtboard`).
+   * The artboard is hosted by whatever nested-artboard slot the main file
+   * binds to that property, and its first state machine runs there.
+   *
+   *   - `file` is a key of `RiveRenderConfig.extraFiles`.
+   *   - `artboard` is the artboard to take from that file.
+   *   - `viewModel` selects the view model of the extra file to instantiate
+   *     for the artboard. If omitted, the artboard's own default view model
+   *     is used, then the file's first one. The instance always comes from
+   *     the extra file: the artboard would otherwise read the main file's
+   *     view models and render empty.
+   *   - `properties` sets properties on that instance. It accepts every
+   *     `PropertyValue`, `image`, `font`, `list`, `trigger` and nested
+   *     `artboard` bindings included.
+   *
+   * The render fails, naming the property, when the file key, the artboard
+   * or the view model does not exist, or when the main view model has no
+   * artboard property at this path.
+   */
+  | {
+      type: "artboard";
+      file: string;
+      artboard: string;
+      viewModel?: string;
+      properties?: Record<string, PropertyValue>;
+    };
 
 export interface ViewModelDataConfig {
   /** ViewModel name (optional, uses default) */
@@ -87,6 +115,21 @@ export interface AssetConfig {
   images?: Record<string, string>;
   /** Map of font name -> local file path for fonts */
   fonts?: Record<string, string>;
+}
+
+/**
+ * A second .riv file whose artboards can be bound into artboard properties of
+ * the main file's view model (see the `artboard` `PropertyValue`).
+ */
+export interface ExtraFileConfig {
+  /** Path to the extra .riv file */
+  rivFile: string;
+  /**
+   * Asset overrides for this file only. They are kept apart from the main
+   * file's `assets`, so two files can use the same asset name with different
+   * overrides.
+   */
+  assets?: AssetConfig;
 }
 
 export interface RiveRenderConfig {
@@ -112,6 +155,12 @@ export interface RiveRenderConfig {
   viewModelData?: ViewModelDataConfig;
   /** Referenced assets to load */
   assets?: AssetConfig;
+  /**
+   * Extra .riv files, by alias, to take artboards from. Each is loaded with
+   * its own `assets`; reference it from an `artboard` property value by its
+   * key.
+   */
+  extraFiles?: Record<string, ExtraFileConfig>;
   /**
    * State machine input overrides. Numbers set number inputs, booleans set
    * boolean inputs; `true` on a trigger input fires it.

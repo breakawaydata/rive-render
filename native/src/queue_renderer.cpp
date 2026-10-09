@@ -8,7 +8,9 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -136,16 +138,37 @@ static std::string stripExtension(const std::string& key)
 //
 // Everything else (embedded, no override) returns false so the importer
 // decodes the in-band bytes as normal.
+//
+// Extra files (artboards bound into the main file's artboard properties) have
+// their own override tables: two files can name an asset the same, and each
+// must get the override that was configured for *its* file. The caller picks
+// the table with setActive() before loading each file, and loads files one at
+// a time, so the table is never switched while a load is in flight.
 class RenderAssetLoader : public FileAssetLoader
 {
   public:
-    RenderAssetLoader(const AssetConfig& assets)
+    // Key of the main file's table.
+    static constexpr const char* kMainFile = "";
+
+    explicit RenderAssetLoader(const AssetConfig& mainAssets)
     {
-        for (auto& [name, path] : assets.images)
-            m_images[stripExtension(name)] = readAssetFile(path);
-        for (auto& [name, path] : assets.fonts)
-            m_fonts[stripExtension(name)] = readAssetFile(path);
+        addFile(kMainFile, mainAssets);
+        m_active = &m_files.at(kMainFile);
     }
+
+    // Reads every override file of `assets` up front, so a bad asset path
+    // fails before the server thread exists.
+    void addFile(const std::string& alias, const AssetConfig& assets)
+    {
+        Overrides& overrides = m_files[alias];
+        for (auto& [name, path] : assets.images)
+            overrides.images[stripExtension(name)] = readAssetFile(path);
+        for (auto& [name, path] : assets.fonts)
+            overrides.fonts[stripExtension(name)] = readAssetFile(path);
+    }
+
+    // Selects the override table used for the next file load.
+    void setActive(const std::string& alias) { m_active = &m_files.at(alias); }
 
     bool loadContents(FileAsset& asset, Span<const uint8_t> inBandBytes, Factory* factory) override
     {
@@ -153,7 +176,7 @@ class RenderAssetLoader : public FileAssetLoader
         const bool isFont = asset.is<FontAsset>();
         if (!isImage && !isFont)
             return false;
-        auto& overrides = isImage ? m_images : m_fonts;
+        auto& overrides = isImage ? m_active->images : m_active->fonts;
 
         auto it = overrides.find(asset.uniqueName());
         if (it == overrides.end() && inBandBytes.empty())
@@ -180,13 +203,19 @@ class RenderAssetLoader : public FileAssetLoader
         return asset.decode(arr, factory);
     }
 
-    std::map<std::string, std::vector<uint8_t>> m_images;
-    std::map<std::string, std::vector<uint8_t>> m_fonts;
+    struct Overrides
+    {
+        std::map<std::string, std::vector<uint8_t>> images;
+        std::map<std::string, std::vector<uint8_t>> fonts;
+    };
+
+    std::map<std::string, Overrides> m_files;
+    const Overrides* m_active = nullptr;
 };
 
 // Walk a property tree and collect every filesystem path referenced by a
-// property of `type` ("image" / "font"). Recurses through nested list rows so
-// a payload anywhere in the tree gets pre-decoded.
+// property of `type` ("image" / "font"). Recurses through nested list rows and
+// bound artboards so a payload anywhere in the tree gets pre-decoded.
 static void collectAssetPaths(const std::map<std::string, ViewModelPropertyValue>& properties,
                               const char* type, std::vector<std::string>& outPaths)
 {
@@ -199,6 +228,8 @@ static void collectAssetPaths(const std::map<std::string, ViewModelPropertyValue
             for (auto& item : prop.listValue)
                 collectAssetPaths(item.properties, type, outPaths);
         }
+        else if (prop.type == "artboard" && prop.artboardValue)
+            collectAssetPaths(prop.artboardValue->properties, type, outPaths);
     }
 }
 
@@ -232,6 +263,40 @@ struct DecodedVmAssets
     std::map<std::string, rive::Font*> fonts;
 };
 
+// A view model instance created for a bound artboard, with the properties it
+// was given. Kept alive until the parent is bound so its triggers can fire.
+struct NestedBinding
+{
+    rcp<rive::ViewModelInstanceRuntime> inst;
+    const std::map<std::string, ViewModelPropertyValue>* properties;
+};
+
+// Everything applyPropertiesDirect needs besides the instance it fills.
+struct ApplyContext
+{
+    const DecodedVmAssets& decoded;
+    CommandServer* server;
+    const std::map<std::string, FileHandle>& extraFiles;
+    // Appended to for every artboard binding, so the caller can fire the
+    // nested triggers after the parent is bound.
+    std::vector<NestedBinding>& nested;
+
+    // The loaded File behind an extraFiles alias, or nullptr for an alias the
+    // config never declared.
+    rive::File* resolveFile(const std::string& alias) const
+    {
+        auto it = extraFiles.find(alias);
+        return it == extraFiles.end() ? nullptr : server->getFile(it->second);
+    }
+};
+
+// Bind an artboard of an extra file into the artboard property at `path`, with
+// a view model instance of that same file carrying the nested properties.
+// Throws on a bad alias, artboard, view model or property path: a binding that
+// silently did nothing would render an empty card with no hint why.
+static void bindExternalArtboard(rive::ViewModelInstanceRuntime* inst, const std::string& path,
+                                 const ArtboardBindingConfig& binding, const ApplyContext& ctx);
+
 // Apply a property map to a ViewModelInstanceRuntime on the server thread.
 // Recursively descends into list children — each list row gets a freshly
 // created VM instance, has its own properties applied, and is appended to the
@@ -239,10 +304,11 @@ struct DecodedVmAssets
 // fireTriggers) so the bound state machine observes them.
 static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRuntime* inst,
                                   const std::map<std::string, ViewModelPropertyValue>& properties,
-                                  const DecodedVmAssets& decoded)
+                                  const ApplyContext& ctx)
 {
     if (!inst)
         return;
+    const DecodedVmAssets& decoded = ctx.decoded;
     for (auto& [path, prop] : properties)
     {
         if (prop.type == "string")
@@ -316,10 +382,71 @@ static void applyPropertiesDirect(rive::File* file, rive::ViewModelInstanceRunti
                                                       : rowVm->createDefaultInstance();
                 if (!rowInst)
                     continue;
-                applyPropertiesDirect(file, rowInst.get(), item.properties, decoded);
+                applyPropertiesDirect(file, rowInst.get(), item.properties, ctx);
                 listProp->addInstance(rowInst.get());
             }
         }
+        else if (prop.type == "artboard")
+        {
+            if (!prop.artboardValue)
+                throw std::runtime_error("Artboard property '" + path + "' has no binding");
+            bindExternalArtboard(inst, path, *prop.artboardValue, ctx);
+        }
+    }
+}
+
+static void bindExternalArtboard(rive::ViewModelInstanceRuntime* inst, const std::string& path,
+                                 const ArtboardBindingConfig& binding, const ApplyContext& ctx)
+{
+    const std::string where = "Artboard property '" + path + "'";
+    if (binding.file.empty() || binding.artboard.empty())
+        throw std::runtime_error(where + " requires both \"file\" and \"artboard\"");
+
+    auto* abProp = inst->propertyArtboard(path);
+    if (!abProp)
+        throw std::runtime_error("No artboard property at path '" + path + "'");
+
+    rive::File* extra = ctx.resolveFile(binding.file);
+    if (!extra)
+        throw std::runtime_error(where + ": unknown file '" + binding.file +
+                                 "' (declare it under extraFiles)");
+
+    auto bindable = extra->bindableArtboardNamed(binding.artboard);
+    if (!bindable)
+        throw std::runtime_error(where + ": artboard '" + binding.artboard +
+                                 "' not found in file '" + binding.file + "'");
+
+    // The nested artboard reads its data from a view model instance of ITS
+    // file. Without one it falls back to the parent file's view models and
+    // renders empty, so always create one whenever the file has a view model.
+    if (!binding.viewModel.empty() && !extra->viewModelByName(binding.viewModel))
+        throw std::runtime_error(where + ": view model '" + binding.viewModel +
+                                 "' not found in file '" + binding.file + "'");
+    auto nestedArtboard = extra->artboardNamed(binding.artboard);
+    rive::ViewModelRuntime* nestedVm =
+        resolveViewModelRuntime(extra, nestedArtboard.get(), binding.viewModel);
+    rcp<rive::ViewModelInstanceRuntime> nestedInst;
+    if (nestedVm)
+    {
+        nestedInst = nestedVm->createDefaultInstance();
+        if (!nestedInst)
+            throw std::runtime_error(where + ": could not create a view model instance of '" +
+                                     nestedVm->name() + "'");
+        applyPropertiesDirect(extra, nestedInst.get(), binding.properties, ctx);
+    }
+    else if (!binding.properties.empty())
+    {
+        throw std::runtime_error(where + ": file '" + binding.file +
+                                 "' has no view model for the properties to bind to");
+    }
+
+    // Order matters: value() clears any view model instance already bound to
+    // the property, so the instance goes in second.
+    abProp->value(bindable);
+    if (nestedInst)
+    {
+        abProp->viewModelInstance(nestedInst->instance());
+        ctx.nested.push_back({nestedInst, &binding.properties});
     }
 }
 
@@ -451,9 +578,25 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
     //    caller asset overrides and CDN-hosted assets during File::import
     //    (see RenderAssetLoader). It reads every override file up front, so
     //    a bad asset path fails here, before the server thread exists.
+    //    Extra files get their own override tables, so same-named assets in
+    //    different files cannot collide.
     auto queue = make_rcp<CommandQueue>();
-    auto server = std::make_unique<CommandServer>(queue, headless.renderContext(),
-                                                  make_rcp<RenderAssetLoader>(config.assets));
+    auto assetLoader = make_rcp<RenderAssetLoader>(config.assets);
+    for (auto& [alias, extra] : config.extraFiles)
+        assetLoader->addFile(alias, extra.assets);
+    // Read the extra .riv files here too, so a bad path fails before the
+    // server thread exists.
+    std::map<std::string, std::vector<uint8_t>> extraRivBytes;
+    for (auto& [alias, extra] : config.extraFiles)
+    {
+        std::ifstream f(extra.rivFile, std::ios::binary);
+        if (!f.is_open())
+            throw std::runtime_error("Failed to open extra .riv file '" + alias +
+                                     "': " + extra.rivFile);
+        extraRivBytes[alias] = std::vector<uint8_t>(std::istreambuf_iterator<char>(f),
+                                                    std::istreambuf_iterator<char>());
+    }
+    auto server = std::make_unique<CommandServer>(queue, headless.renderContext(), assetLoader);
 
     // 3. Start server on background thread
     std::thread serverThread([&server]() { server->serveUntilDisconnect(); });
@@ -492,6 +635,29 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         {
             throw std::runtime_error("Failed to load .riv: " + fileListener.errorMsg);
         }
+
+        // 5b. Load the extra files one at a time, each with its own asset
+        //     override table active, waiting for each load to finish before
+        //     switching tables.
+        std::map<std::string, FileHandle> extraFileHandles;
+        std::vector<std::unique_ptr<QueueFileListener>> extraListeners;
+        for (auto& [alias, bytes] : extraRivBytes)
+        {
+            assetLoader->setActive(alias);
+            auto listener = std::make_unique<QueueFileListener>();
+            auto handle = queue->loadFile(std::vector<uint8_t>(bytes.begin(), bytes.end()),
+                                          listener.get(), 0, stderrScriptingContextFactory());
+            auto* l = listener.get();
+            extraListeners.push_back(std::move(listener));
+            waitFor(
+                queue, [&]() { return l->loaded.load() || l->errored.load(); }, "extra file load",
+                120000);
+            if (l->errored.load())
+                throw std::runtime_error("Failed to load extra .riv '" + alias +
+                                         "': " + l->errorMsg);
+            extraFileHandles[alias] = handle;
+        }
+        assetLoader->setActive(RenderAssetLoader::kMainFile);
 
         // 6. Instantiate artboard.
         // Intentionally do NOT call setArtboardSize — that resizes the
@@ -560,8 +726,10 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                             decoded.images[path] = srv->getImage(handle);
                         for (auto& [path, handle] : vmFontHandles)
                             decoded.fonts[path] = srv->getFont(handle);
+                        std::vector<NestedBinding> nestedBindings;
+                        ApplyContext applyCtx{decoded, srv, extraFileHandles, nestedBindings};
                         applyPropertiesDirect(file, inst.get(), config.viewModelData.properties,
-                                              decoded);
+                                              applyCtx);
 
                         // The state machine and its artboard share one data
                         // context, so binding the state machine binds both.
@@ -570,6 +738,10 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                         else
                             artboard->bindViewModelInstance(inst->instance());
                         fireTriggers(inst.get(), config.viewModelData.properties);
+                        // Triggers on bound artboards' view models fire after
+                        // the parent bind too, so their state machines see them.
+                        for (auto& nested : nestedBindings)
+                            fireTriggers(nested.inst.get(), *nested.properties);
 
                         // Two zero-dt advances so data binds propagate through
                         // nested artboards: the first instantiates nested artboard
