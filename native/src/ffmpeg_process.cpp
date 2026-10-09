@@ -100,6 +100,16 @@ bool writeAll(int fd, const uint8_t* data, size_t size)
     return true;
 }
 
+pid_t waitForChild(pid_t pid, int* status)
+{
+    pid_t waited;
+    do
+    {
+        waited = waitpid(pid, status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited;
+}
+
 } // namespace
 
 void runFfmpegWithFrames(const std::string& ffmpegPath, const std::vector<std::string>& args,
@@ -181,29 +191,42 @@ void runFfmpegWithFrames(const std::string& ffmpegPath, const std::vector<std::s
     std::string captured;
     std::mutex capturedMutex;
     int errFd = errPipe[0];
-    std::thread stderrReader(
-        [errFd, &captured, &capturedMutex]()
+    auto drainStderr = [errFd, &captured, &capturedMutex]()
+    {
+        char buf[4096];
+        for (;;)
         {
-            char buf[4096];
-            for (;;)
+            ssize_t n = read(errFd, buf, sizeof(buf));
+            if (n < 0 && errno == EINTR)
             {
-                ssize_t n = read(errFd, buf, sizeof(buf));
-                if (n < 0 && errno == EINTR)
-                {
-                    continue;
-                }
-                if (n <= 0)
-                {
-                    break;
-                }
-                std::lock_guard<std::mutex> lock(capturedMutex);
-                captured.append(buf, static_cast<size_t>(n));
-                if (captured.size() > kStderrCap)
-                {
-                    captured.erase(0, captured.size() - kStderrCap);
-                }
+                continue;
             }
-        });
+            if (n <= 0)
+            {
+                break;
+            }
+            std::lock_guard<std::mutex> lock(capturedMutex);
+            captured.append(buf, static_cast<size_t>(n));
+            if (captured.size() > kStderrCap)
+            {
+                captured.erase(0, captured.size() - kStderrCap);
+            }
+        }
+    };
+    std::thread stderrReader;
+    try
+    {
+        stderrReader = std::thread(drainStderr);
+    }
+    catch (const std::exception& e)
+    {
+        // ffmpeg is already running: give it EOF, collect it, then report.
+        closeFd(inPipe[1]);
+        closeFd(errPipe[0]);
+        int ignored = 0;
+        waitForChild(pid, &ignored);
+        throw std::runtime_error(std::string("Failed to start ffmpeg stderr reader: ") + e.what());
+    }
 
     bool writeFailed = false;
     int writeErrno = 0;
@@ -220,11 +243,7 @@ void runFfmpegWithFrames(const std::string& ffmpegPath, const std::vector<std::s
     closeFd(inPipe[1]);
 
     int status = 0;
-    pid_t waited;
-    do
-    {
-        waited = waitpid(pid, &status, 0);
-    } while (waited < 0 && errno == EINTR);
+    pid_t waited = waitForChild(pid, &status);
 
     stderrReader.join();
     closeFd(errPipe[0]);
