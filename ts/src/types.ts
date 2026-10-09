@@ -121,6 +121,15 @@ export interface RiveRenderConfig {
   ffmpegPath?: string;
 }
 
+export interface RenderOptions {
+  /**
+   * Aborting kills the native render process with SIGKILL and rejects with a
+   * `RiveRenderError` (`exitCode` null). A signal that is already aborted
+   * rejects without spawning anything.
+   */
+  signal?: AbortSignal;
+}
+
 export interface RenderResult {
   success: boolean;
   outputPath?: string;

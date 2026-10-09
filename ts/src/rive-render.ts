@@ -4,6 +4,7 @@ import { resolveFFmpeg } from "./ffmpeg-resolver.js";
 import type {
   RiveRenderConfig,
   RenderResult,
+  RenderOptions,
   ViewModelDataConfig,
   AssetConfig,
 } from "./types.js";
@@ -18,6 +19,16 @@ export class RiveRenderError extends Error {
   }
 }
 
+function abortedError(signal?: AbortSignal): RiveRenderError {
+  const reason: unknown = signal?.reason;
+  return new RiveRenderError(
+    reason instanceof Error
+      ? `rive-render aborted: ${reason.message}`
+      : "rive-render aborted",
+    null
+  );
+}
+
 export class RiveRenderer {
   private binaryPath: string;
 
@@ -25,7 +36,13 @@ export class RiveRenderer {
     this.binaryPath = options?.binaryPath ?? resolveBinary();
   }
 
-  async render(config: RiveRenderConfig): Promise<RenderResult> {
+  async render(
+    config: RiveRenderConfig,
+    options?: RenderOptions
+  ): Promise<RenderResult> {
+    const signal = options?.signal;
+    if (signal?.aborted) throw abortedError(signal);
+
     // Auto-resolve ffmpeg for every format the native binary encodes with it
     if (
       config.output &&
@@ -35,6 +52,8 @@ export class RiveRenderer {
       !config.ffmpegPath
     ) {
       config = { ...config, ffmpegPath: await resolveFFmpeg() };
+      // The resolver can download ffmpeg, so the signal may fire while waiting
+      if (signal?.aborted) throw abortedError(signal);
     }
 
     return new Promise((resolve, reject) => {
@@ -49,11 +68,30 @@ export class RiveRenderer {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
+
+      // Kill first, then reject, both synchronously inside the abort event so
+      // a caller that retries on rejection never overlaps the old render.
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        proc.kill("SIGKILL");
+        reject(abortedError(signal));
+      };
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      // Writing the config to a killed child raises EPIPE on stdin; the
+      // outcome is already reported through close/error/abort.
+      proc.stdin.on("error", () => {});
 
       proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
       proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
 
       proc.on("close", (code) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
         // The rive-runtime may print info lines to stdout (e.g. Vulkan GPU
         // info). The result is always the last line that is a JSON object.
         const jsonLine = stdout
@@ -96,6 +134,9 @@ export class RiveRenderer {
       });
 
       proc.on("error", (err) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
         reject(
           new RiveRenderError(
             `Failed to spawn rive-render: ${err.message}`,
@@ -120,21 +161,25 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
-    }
+    },
+    renderOptions?: RenderOptions
   ): Promise<RenderResult> {
-    return this.render({
-      rivFile,
-      artboard: options.artboard,
-      stateMachine: options.stateMachine,
-      width: options.width ?? 800,
-      height: options.height ?? 600,
-      screenshot: {
-        path: options.outputPath,
-        timestamp: options.timestamp ?? 0,
+    return this.render(
+      {
+        rivFile,
+        artboard: options.artboard,
+        stateMachine: options.stateMachine,
+        width: options.width ?? 800,
+        height: options.height ?? 600,
+        screenshot: {
+          path: options.outputPath,
+          timestamp: options.timestamp ?? 0,
+        },
+        viewModelData: options.viewModelData,
+        assets: options.assets,
       },
-      viewModelData: options.viewModelData,
-      assets: options.assets,
-    });
+      renderOptions
+    );
   }
 
   async renderGif(
@@ -149,23 +194,27 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
-    }
+    },
+    renderOptions?: RenderOptions
   ): Promise<RenderResult> {
-    return this.render({
-      rivFile,
-      artboard: options.artboard,
-      stateMachine: options.stateMachine,
-      width: options.width ?? 800,
-      height: options.height ?? 600,
-      output: {
-        format: "gif",
-        path: options.outputPath,
-        fps: options.fps ?? 30,
-        duration: options.duration,
+    return this.render(
+      {
+        rivFile,
+        artboard: options.artboard,
+        stateMachine: options.stateMachine,
+        width: options.width ?? 800,
+        height: options.height ?? 600,
+        output: {
+          format: "gif",
+          path: options.outputPath,
+          fps: options.fps ?? 30,
+          duration: options.duration,
+        },
+        viewModelData: options.viewModelData,
+        assets: options.assets,
       },
-      viewModelData: options.viewModelData,
-      assets: options.assets,
-    });
+      renderOptions
+    );
   }
 
   async renderVideo(
@@ -181,22 +230,26 @@ export class RiveRenderer {
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
       assets?: AssetConfig;
-    }
+    },
+    renderOptions?: RenderOptions
   ): Promise<RenderResult> {
-    return this.render({
-      rivFile,
-      artboard: options.artboard,
-      stateMachine: options.stateMachine,
-      width: options.width ?? 1920,
-      height: options.height ?? 1080,
-      output: {
-        format: options.format ?? "mp4",
-        path: options.outputPath,
-        fps: options.fps ?? 60,
-        duration: options.duration,
+    return this.render(
+      {
+        rivFile,
+        artboard: options.artboard,
+        stateMachine: options.stateMachine,
+        width: options.width ?? 1920,
+        height: options.height ?? 1080,
+        output: {
+          format: options.format ?? "mp4",
+          path: options.outputPath,
+          fps: options.fps ?? 60,
+          duration: options.duration,
+        },
+        viewModelData: options.viewModelData,
+        assets: options.assets,
       },
-      viewModelData: options.viewModelData,
-      assets: options.assets,
-    });
+      renderOptions
+    );
   }
 }
