@@ -83,7 +83,11 @@ const cli = new RiveRenderer(options?: { binaryPath?: string });
 | `screenshot(rivFile, options)` | Capture a single frame as PNG |
 | `renderGif(rivFile, options)` | Render an animated GIF |
 | `renderVideo(rivFile, options)` | Render an MP4 or WebM video |
-| `render(config)` | Low-level: full config control |
+| `render(config, renderOptions?)` | Low-level: full config control |
+
+### Cancelling a Render
+
+`render` and the `screenshot`, `renderGif` and `renderVideo` helpers accept an optional trailing `{ signal }` argument holding an `AbortSignal`. The native process runs in its own process group, and aborting the signal sends `SIGKILL` to that whole group straight away, so the ffmpeg process the binary starts for GIF and video output dies with it. The promise rejects with a `RiveRenderError` whose `exitCode` is `null` once the process has exited, so a retry never overlaps the killed render; an abort while ffmpeg is still being resolved rejects immediately. When the signal's reason is an `Error`, its message is appended to the error message. A signal that is already aborted rejects without starting a process. Use this to enforce a timeout without leaving the native process (hundreds of MiB) running after the caller has given up.
 
 ### Screenshot Options
 
