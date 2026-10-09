@@ -3,6 +3,11 @@ import { tmpdir } from "os";
 import path from "path";
 import { RiveRenderer, RiveRenderError } from "../index.js";
 import type { RiveRenderConfig } from "../index.js";
+import { resolveFFmpeg } from "../ffmpeg-resolver.js";
+
+// ffmpeg resolution can hit the network, so the resolver is replaced here. The
+// other tests use a screenshot config, which never calls it.
+jest.mock("../ffmpeg-resolver.js", () => ({ resolveFFmpeg: jest.fn() }));
 
 // These tests use a fake "native binary" (a shell script that records its pid
 // and sleeps), so they need neither the built renderer nor ffmpeg.
@@ -41,39 +46,50 @@ describe("RiveRenderer.render abort signal", () => {
   let dir: string;
   let script: string;
   let pidFile: string;
+  let grandchildPidFile: string;
+
+  // Records pids via rename so a reader never sees a half-written file.
+  function writeScript(file: string, body: string): void {
+    writeFileSync(file, `#!/bin/sh\n${body}`);
+    chmodSync(file, 0o755);
+  }
+
+  function readPid(file: string): number {
+    return Number(readFileSync(file, "utf8").trim());
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "rive-render-abort-"));
     script = path.join(dir, "fake-render.sh");
     pidFile = path.join(dir, "pid");
-    // Write the pid via rename so a reader never sees a half-written file.
-    writeFileSync(
+    grandchildPidFile = path.join(dir, "grandchild-pid");
+    writeScript(
       script,
-      `#!/bin/sh\necho $$ > "${pidFile}.tmp"\nmv "${pidFile}.tmp" "${pidFile}"\nexec sleep 600\n`
+      `echo $$ > "${pidFile}.tmp"\nmv "${pidFile}.tmp" "${pidFile}"\nexec sleep 600\n`
     );
-    chmodSync(script, 0o755);
+    (resolveFFmpeg as jest.Mock).mockReset();
   });
 
   afterEach(() => {
-    if (existsSync(pidFile)) {
-      const pid = Number(readFileSync(pidFile, "utf8").trim());
-      if (isAlive(pid)) process.kill(pid, "SIGKILL");
+    for (const file of [pidFile, grandchildPidFile]) {
+      if (existsSync(file) && isAlive(readPid(file))) {
+        process.kill(readPid(file), "SIGKILL");
+      }
     }
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("kills the native child and rejects when the signal aborts mid-render", async () => {
+  it("kills the native child and rejects only after it has exited", async () => {
     const controller = new AbortController();
     const renderer = new RiveRenderer({ binaryPath: script });
 
-    const result = renderer.render(config, { signal: controller.signal });
-    const outcome = result.then(
+    const outcome = renderer.render(config, { signal: controller.signal }).then(
       () => null,
       (err: unknown) => err
     );
 
     expect(await waitFor(() => existsSync(pidFile), 5000)).toBe(true);
-    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    const pid = readPid(pidFile);
     expect(isAlive(pid)).toBe(true);
 
     controller.abort();
@@ -83,8 +99,42 @@ describe("RiveRenderer.render abort signal", () => {
     expect((err as RiveRenderError).exitCode).toBeNull();
     expect((err as RiveRenderError).message).toContain("aborted");
 
-    // The child may linger as a zombie until Node reaps it, so poll.
+    // The rejection waits for close, so the child is already reaped: no poll.
+    expect(isAlive(pid)).toBe(false);
+  });
+
+  it("kills a grandchild (like ffmpeg) in the same process group", async () => {
+    writeScript(
+      script,
+      [
+        `sleep 600 &`,
+        `echo $! > "${grandchildPidFile}.tmp"`,
+        `mv "${grandchildPidFile}.tmp" "${grandchildPidFile}"`,
+        `echo $$ > "${pidFile}.tmp"`,
+        `mv "${pidFile}.tmp" "${pidFile}"`,
+        `exec sleep 600`,
+        ``,
+      ].join("\n")
+    );
+    const controller = new AbortController();
+    const renderer = new RiveRenderer({ binaryPath: script });
+
+    const outcome = renderer.render(config, { signal: controller.signal }).then(
+      () => null,
+      (err: unknown) => err
+    );
+
+    expect(await waitFor(() => existsSync(pidFile), 5000)).toBe(true);
+    const pid = readPid(pidFile);
+    const grandchildPid = readPid(grandchildPidFile);
+    expect(isAlive(pid)).toBe(true);
+    expect(isAlive(grandchildPid)).toBe(true);
+
+    controller.abort();
+
+    expect(await outcome).toBeInstanceOf(RiveRenderError);
     expect(await waitFor(() => !isAlive(pid), 5000)).toBe(true);
+    expect(await waitFor(() => !isAlive(grandchildPid), 5000)).toBe(true);
   });
 
   it("includes the abort reason message when the reason is an Error", async () => {
@@ -114,6 +164,35 @@ describe("RiveRenderer.render abort signal", () => {
     ).rejects.toBeInstanceOf(RiveRenderError);
 
     // Give a wrongly spawned script time to write its pid file.
+    await sleep(300);
+    expect(existsSync(pidFile)).toBe(false);
+  });
+
+  it("rejects promptly when aborted while ffmpeg is still being resolved", async () => {
+    (resolveFFmpeg as jest.Mock).mockReturnValue(new Promise(() => {}));
+    const controller = new AbortController();
+    const renderer = new RiveRenderer({ binaryPath: script });
+
+    const outcome = renderer
+      .render(
+        {
+          rivFile: "unused.riv",
+          output: { format: "gif", path: "unused.gif", duration: 1 },
+        },
+        { signal: controller.signal }
+      )
+      .then(
+        () => null,
+        (err: unknown) => err
+      );
+    expect(resolveFFmpeg).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+
+    const err = await outcome;
+    expect(err).toBeInstanceOf(RiveRenderError);
+    expect((err as RiveRenderError).message).toContain("aborted");
+
     await sleep(300);
     expect(existsSync(pidFile)).toBe(false);
   });

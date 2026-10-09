@@ -29,6 +29,29 @@ function abortedError(signal?: AbortSignal): RiveRenderError {
   );
 }
 
+/**
+ * Resolve with `work`, or reject with the aborted error as soon as `signal`
+ * aborts. A failure of `work` after the abort also reports as aborted.
+ */
+function raceAbort<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortedError(signal));
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err: unknown) => {
+        cleanup();
+        reject(signal.aborted ? abortedError(signal) : err);
+      }
+    );
+  });
+}
+
 export class RiveRenderer {
   private binaryPath: string;
 
@@ -51,14 +74,18 @@ export class RiveRenderer {
         config.output.format === "gif") &&
       !config.ffmpegPath
     ) {
-      config = { ...config, ffmpegPath: await resolveFFmpeg() };
       // The resolver can download ffmpeg, so the signal may fire while waiting
+      const ffmpegPath = await raceAbort(resolveFFmpeg(), signal);
       if (signal?.aborted) throw abortedError(signal);
+      config = { ...config, ffmpegPath };
     }
 
     return new Promise((resolve, reject) => {
       const proc = spawn(this.binaryPath, [], {
         stdio: ["pipe", "pipe", "pipe"],
+        // Own process group, so an abort can kill the ffmpeg the binary starts
+        // along with the binary itself. No unref(): we still wait for close.
+        detached: true,
         env: {
           ...process.env,
           // Suppress MoltenVK info logging to keep stdout clean for JSON
@@ -69,14 +96,20 @@ export class RiveRenderer {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let aborted = false;
 
-      // Kill first, then reject, both synchronously inside the abort event so
-      // a caller that retries on rejection never overlaps the old render.
+      // Kill synchronously inside the abort event, but reject only once the
+      // child has exited (close/error below), so a caller that retries on
+      // rejection never overlaps the old render.
       const onAbort = () => {
         if (settled) return;
-        settled = true;
-        proc.kill("SIGKILL");
-        reject(abortedError(signal));
+        aborted = true;
+        try {
+          // Negative pid signals the whole process group, ffmpeg included.
+          process.kill(-(proc.pid as number), "SIGKILL");
+        } catch {
+          proc.kill("SIGKILL");
+        }
       };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -92,6 +125,10 @@ export class RiveRenderer {
         cleanup();
         if (settled) return;
         settled = true;
+        if (aborted) {
+          reject(abortedError(signal));
+          return;
+        }
         // The rive-runtime may print info lines to stdout (e.g. Vulkan GPU
         // info). The result is always the last line that is a JSON object.
         const jsonLine = stdout
@@ -137,6 +174,10 @@ export class RiveRenderer {
         cleanup();
         if (settled) return;
         settled = true;
+        if (aborted) {
+          reject(abortedError(signal));
+          return;
+        }
         reject(
           new RiveRenderError(
             `Failed to spawn rive-render: ${err.message}`,
