@@ -26,6 +26,7 @@ do
         'src/**.hpp',
         'src/**.h',
         'src/config.cpp',
+        'src/device_select.cpp',
         'src/ffmpeg_process.cpp',
         'src/main.cpp',
         'src/output_gif.cpp',

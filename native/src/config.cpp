@@ -539,6 +539,41 @@ std::map<std::string, ExtraFileConfig> parseExtraFiles(const std::string& s, siz
     return result;
 }
 
+// Reject an encoder option value ffmpeg would not accept, naming the field and the valid values.
+void requireOneOf(const char* field, const std::string& value,
+                  const std::vector<std::string>& valid)
+{
+    for (const auto& v : valid)
+    {
+        if (value == v)
+            return;
+    }
+    std::string list;
+    for (const auto& v : valid)
+    {
+        if (!list.empty())
+            list += ", ";
+        list += v;
+    }
+    throw std::runtime_error(std::string("Invalid output.") + field + " \"" + value +
+                             "\": expected one of " + list);
+}
+
+void validateEncoderOptions(const OutputConfig& output)
+{
+    requireOneOf("encoder", output.encoder, {"auto", "nvenc", "x264"});
+    requireOneOf("preset", output.preset,
+                 {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow",
+                  "slower", "veryslow", "placebo"});
+    requireOneOf("nvencPreset", output.nvencPreset, {"p1", "p2", "p3", "p4", "p5", "p6", "p7"});
+    if (output.format == "mp4" && output.deterministic && output.encoder == "nvenc")
+    {
+        throw std::runtime_error("output.deterministic cannot be combined with output.encoder "
+                                 "\"nvenc\": NVENC output is not reproducible. Use encoder "
+                                 "\"x264\" or \"auto\", or drop deterministic.");
+    }
+}
+
 } // namespace
 
 Config Config::parse(const std::string& json)
@@ -672,6 +707,14 @@ Config Config::parse(const std::string& json)
                     cfg.output.duration = parseNumber(json, i);
                 else if (okey == "quality")
                     cfg.output.quality = static_cast<int>(parseNumber(json, i));
+                else if (okey == "encoder")
+                    cfg.output.encoder = parseString(json, i);
+                else if (okey == "preset")
+                    cfg.output.preset = parseString(json, i);
+                else if (okey == "nvencPreset")
+                    cfg.output.nvencPreset = parseString(json, i);
+                else if (okey == "deterministic")
+                    cfg.output.deterministic = parseBool(json, i);
                 else
                     skipValue(json, i);
             }
@@ -773,6 +816,8 @@ Config Config::parse(const std::string& json)
     {
         throw std::runtime_error("rivFile is required");
     }
+
+    validateEncoderOptions(cfg.output);
 
     return cfg;
 }

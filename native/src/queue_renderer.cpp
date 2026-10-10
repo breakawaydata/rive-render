@@ -569,7 +569,8 @@ void resolveCanvasSize(Config& config, const std::vector<uint8_t>& rivBytes)
     }
 }
 
-QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes)
+QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_t>& rivBytes,
+                                  const FrameSink& sink)
 {
     // 1. Create headless renderer
     HeadlessRenderer headless(config.width, config.height, config.swiftshader);
@@ -803,9 +804,6 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         };
         auto scene = std::make_shared<SceneCache>();
 
-        std::vector<std::vector<uint8_t>> frames;
-        frames.reserve(config.hasOutput() ? totalFrames : 1);
-
         std::mutex frameMutex;
         std::condition_variable frameCv;
         bool frameReady = false;
@@ -864,10 +862,11 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
             }
         }
 
-        // Per-frame render loop. For screenshots this executes exactly once
-        // (producing the final frame); for animation output it runs once per
-        // frame and keeps every frame.
-        const int renderFrames = config.hasScreenshot() ? 1 : totalFrames;
+        // Per-frame render loop. Screenshots and png output execute it exactly
+        // once (screenshots produce the final frame); animation output runs it
+        // once per frame and hands every frame to the sink.
+        const bool singleFrame = config.hasScreenshot() || config.output.format == "png";
+        const int renderFrames = singleFrame ? 1 : totalFrames;
         for (int i = 0; i < renderFrames; i++)
         {
             queue->draw(drawKey, CommandServerDrawCallback(
@@ -889,7 +888,12 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
                 frameReady = false;
             }
 
-            frames.push_back(std::move(currentFrame));
+            // The sink usually only queues the frame for an encoder thread, so the
+            // next draw is issued while the previous frame is still being encoded.
+            // It may block (backpressure) or throw; either way no draw is in flight
+            // here, and a throw takes the catch below.
+            sink(std::move(currentFrame));
+            currentFrame = {};
         }
 
         // 11. Cleanup
@@ -897,7 +901,7 @@ QueueRenderResult renderWithQueue(const Config& config, const std::vector<uint8_
         serverThread.join();
 
         return QueueRenderResult{
-            .frames = std::move(frames),
+            .frameCount = renderFrames,
             .width = config.width,
             .height = config.height,
         };

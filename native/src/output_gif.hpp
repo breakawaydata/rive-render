@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cstdint>
+#include <memory>
 #include <string>
-#include <vector>
 
-// Write a sequence of RGBA frames to an animated GIF via an ffmpeg subprocess (spawned
+#include "ffmpeg_process.hpp"
+
+// Start an ffmpeg process that encodes streamed RGBA frames into an animated GIF (spawned
 // directly, no shell; see ffmpeg_process.hpp)
-void writeGif(const std::string& outputPath, int width, int height, float fps,
-              const std::vector<std::vector<uint8_t>>& frames,
-              const std::string& ffmpegPath = "ffmpeg");
+std::unique_ptr<FfmpegEncoder> openGifEncoder(const std::string& outputPath, int width, int height,
+                                              float fps, const std::string& ffmpegPath = "ffmpeg");
