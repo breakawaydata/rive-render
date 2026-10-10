@@ -12,8 +12,10 @@
  * outputs JSON result to stdout.
  */
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -21,6 +23,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include <curl/curl.h>
 
@@ -155,16 +159,42 @@ static void outputSelectDevice(const Config& config)
     std::cout << "}" << std::endl;
 }
 
-// Render `config` into the ffmpeg process `open` starts, streaming each frame as it is drawn.
-// Returns the frame count. A partial output file is removed when the encode fails after the
-// first frame was handed to ffmpeg.
-static int renderIntoEncoder(const Config& config, const std::vector<uint8_t>& rivBytes,
-                             const std::function<std::unique_ptr<FfmpegEncoder>()>& open)
+// A temporary file next to `path` for ffmpeg to write: `<name>.partial-<pid><ext>`. The extension
+// is kept (ffmpeg picks the muxer from it) and the directory is the same, so the final rename
+// never crosses a filesystem. `format` stands in when `path` has no extension.
+static std::string partialOutputPath(const std::string& path, const std::string& format)
 {
-    auto encoder = open();
+    const size_t slash = path.find_last_of('/');
+    const size_t nameStart = slash == std::string::npos ? 0 : slash + 1;
+    const size_t dot = path.find_last_of('.');
+    std::string stem = path;
+    std::string ext = "." + format;
+    if (dot != std::string::npos && dot > nameStart)
+    {
+        stem = path.substr(0, dot);
+        ext = path.substr(dot);
+    }
+    return stem + ".partial-" + std::to_string(static_cast<long>(getpid())) + ext;
+}
+
+// Render `config` into the ffmpeg process `open` starts, streaming each frame as it is drawn, and
+// return the frame count.
+//
+// ffmpeg writes to a temporary file (`open` receives its path), which replaces the requested
+// output only after ffmpeg finished successfully. A failed encode removes just the temporary file,
+// so a file already at the requested path is never touched, whether or not ffmpeg got as far as
+// opening its output.
+static int
+renderIntoEncoder(const Config& config, const std::vector<uint8_t>& rivBytes,
+                  const std::function<std::unique_ptr<FfmpegEncoder>(const std::string&)>& open)
+{
+    const std::string finalPath = config.output.path;
+    const std::string tempPath = partialOutputPath(finalPath, config.output.format);
     int frames = 0;
+    std::unique_ptr<FfmpegEncoder> encoder;
     try
     {
+        encoder = open(tempPath);
         renderWithQueue(config, rivBytes,
                         [&](std::vector<uint8_t>&& frame)
                         {
@@ -174,14 +204,17 @@ static int renderIntoEncoder(const Config& config, const std::vector<uint8_t>& r
         if (frames == 0)
             throw std::runtime_error("No frames to encode");
         encoder->finish();
+        encoder.reset();
+        if (std::rename(tempPath.c_str(), finalPath.c_str()) != 0)
+        {
+            throw std::runtime_error("Failed to move the encoded file to " + finalPath + ": " +
+                                     std::strerror(errno));
+        }
     }
     catch (...)
     {
-        encoder.reset(); // kills and reaps ffmpeg before the file is removed
-        // Only a run that got a frame to ffmpeg can have written the file; before that, a file at
-        // this path is the user's own and stays.
-        if (frames > 0)
-            std::remove(config.output.path.c_str());
+        encoder.reset();               // kills and reaps ffmpeg before its file is removed
+        std::remove(tempPath.c_str()); // harmless when ffmpeg never created it
         throw;
     }
     return frames;
@@ -207,9 +240,9 @@ static VideoOutcome renderVideoFile(const Config& config, const std::vector<uint
     auto attempt = [&](const VideoEncodeOptions& opts)
     {
         return renderIntoEncoder(config, rivBytes,
-                                 [&]()
+                                 [&](const std::string& path)
                                  {
-                                     return openVideoEncoder(out.path, config.width, config.height,
+                                     return openVideoEncoder(path, config.width, config.height,
                                                              out.fps, out.format, opts,
                                                              config.ffmpegPath);
                                  });
@@ -352,13 +385,13 @@ int main(int argc, char* argv[])
             }
             else if (format == "gif")
             {
-                int frames = renderIntoEncoder(
-                    config, rivBytes,
-                    [&]()
-                    {
-                        return openGifEncoder(config.output.path, config.width, config.height,
-                                              config.output.fps, config.ffmpegPath);
-                    });
+                int frames = renderIntoEncoder(config, rivBytes,
+                                               [&](const std::string& path)
+                                               {
+                                                   return openGifEncoder(
+                                                       path, config.width, config.height,
+                                                       config.output.fps, config.ffmpegPath);
+                                               });
                 outputJson(true, config.output.path, frames, "", w, h, "gif");
             }
             else if (format == "mp4" || format == "webm")

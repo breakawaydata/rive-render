@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { RiveRenderer, RiveRenderError } from "../index.js";
@@ -37,11 +37,20 @@ const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_FFMPEG_LOG, JSON.stringify(argv) + "\\n");
 if (process.env.FAKE_FFMPEG_PID_FILE) fs.writeFileSync(process.env.FAKE_FFMPEG_PID_FILE, String(process.pid));
 const mode = process.env.FAKE_FFMPEG_MODE;
+const output = argv[argv.length - 1];
 if (mode === "fail-all" || (mode === "fail-nvenc" && argv.includes("h264_nvenc"))) {
   process.stderr.write("fake ffmpeg: refusing to encode with " + argv[argv.indexOf("-c:v") + 1] + "\\n");
   process.exit(1);
 }
-if (mode === "drain") {
+if (mode === "write-then-fail" || (mode === "write-then-fail-nvenc" && argv.includes("h264_nvenc"))) {
+  // Opens its output and writes some of it, then dies: what a crashed encode leaves behind.
+  fs.writeFileSync(output, "partial encode");
+  process.stderr.write("fake ffmpeg: died after opening " + output + "\\n");
+  process.exit(1);
+}
+if (mode === "drain" || mode === "write-then-fail-nvenc") {
+  // Like ffmpeg, create the output; the real bytes do not matter to these tests.
+  fs.writeFileSync(output, "fake encode");
   process.stdin.resume();
   process.stdin.on("end", () => process.exit(0));
 } else {
@@ -50,7 +59,7 @@ if (mode === "drain") {
 }
 `;
 
-type FakeMode = "drain" | "fail-nvenc" | "fail-all";
+type FakeMode = "drain" | "fail-nvenc" | "fail-all" | "write-then-fail" | "write-then-fail-nvenc";
 
 let work: string;
 let realFfmpeg: string;
@@ -114,22 +123,48 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Every ffmpeg command line the render started, in order. */
-function ffmpegInvocations(): string[][] {
+/** Every ffmpeg command line the render started, in order, with the output argument as ffmpeg got it. */
+function rawFfmpegInvocations(): string[][] {
   return readFileSync(logFile, "utf8")
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as string[]);
 }
 
+/** The temporary file rive-render has ffmpeg write for the requested output `path`. */
+function partialPathFor(path: string): RegExp {
+  const dot = path.lastIndexOf(".");
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escape(path.slice(0, dot))}\\.partial-\\d+${escape(path.slice(dot))}$`);
+}
+
+/**
+ * Every ffmpeg command line the render started, in order, with ffmpeg's temporary output file
+ * shown as the requested `path`, so a test can compare the arguments alone.
+ */
+function ffmpegInvocations(): string[][] {
+  return rawFfmpegInvocations().map((argv) => {
+    const last = argv[argv.length - 1];
+    const requested = last.replace(/\.partial-\d+(\.[^./]+)$/, "$1");
+    return requested === last ? argv : [...argv.slice(0, -1), requested];
+  });
+}
+
+/** What is left in the work directory for the requested output `path`: itself and any temporary file. */
+function filesFor(path: string): string[] {
+  const stem = basename(path).slice(0, basename(path).lastIndexOf("."));
+  return readdirSync(work).filter((name) => name.startsWith(stem));
+}
+
 function renderMp4(
   output: Partial<OutputConfig>,
   mode: FakeMode | "forward",
   size = 100,
-  extra: { ffmpegPath?: string; artboard?: string } = {}
+  extra: { ffmpegPath?: string; artboard?: string; existing?: string } = {}
 ): { path: string; result: Promise<RenderResult> } {
   process.env.FAKE_FFMPEG_MODE = mode;
   const path = join(work, `out-${Date.now()}-${Math.random().toString(36).slice(2)}.${output.format ?? "mp4"}`);
+  if (extra.existing !== undefined) writeFileSync(path, extra.existing);
   const result = cli.render({
     rivFile: BASKETBALL_RIV,
     width: size,
@@ -328,6 +363,85 @@ describe("NVENC fallback", () => {
       const pid = Number(readFileSync(pidFile, "utf8"));
       expect(isAlive(pid)).toBe(false);
     }
+  });
+});
+
+describe("output file", () => {
+  it("encodes to a temporary file next to the output and moves it into place on success", async () => {
+    const { path, result } = renderMp4({}, "drain");
+    await result;
+
+    const [argv] = rawFfmpegInvocations();
+    expect(argv[argv.length - 1]).toMatch(partialPathFor(path));
+    expect(readFileSync(path, "utf8")).toBe("fake encode");
+    expect(filesFor(path)).toEqual([basename(path)]);
+  });
+
+  it("keeps the extension on the temporary file so ffmpeg picks the muxer", async () => {
+    const { path, result } = renderMp4({ format: "webm" }, "drain");
+    await result;
+
+    const [argv] = rawFfmpegInvocations();
+    expect(argv[argv.length - 1]).toMatch(partialPathFor(path));
+    expect(argv[argv.length - 1].endsWith(".webm")).toBe(true);
+  });
+
+  it("replaces a file that is already at the output path on success", async () => {
+    const { path, result } = renderMp4({}, "forward", 100, { ffmpegPath: realFfmpeg, existing: "old file" });
+    await result;
+
+    expect(Number(ffprobeVideo(path).nb_read_frames)).toBe(6);
+    expect(filesFor(path)).toEqual([basename(path)]);
+  });
+
+  it("leaves a file at the output path alone when ffmpeg fails before opening its output", async () => {
+    const { path, result } = renderMp4({ encoder: "x264" }, "fail-all", 100, { existing: "my file" });
+
+    await expect(result).rejects.toThrow(/ffmpeg exited with status 1/);
+    expect(readFileSync(path, "utf8")).toBe("my file");
+    expect(filesFor(path)).toEqual([basename(path)]);
+  });
+
+  it("leaves a file at the output path alone when ffmpeg dies after opening its output, and removes the partial file", async () => {
+    const { path, result } = renderMp4({ encoder: "x264" }, "write-then-fail", 100, { existing: "my file" });
+
+    await expect(result).rejects.toThrow(/ffmpeg exited with status 1/);
+    expect(readFileSync(path, "utf8")).toBe("my file");
+    expect(filesFor(path)).toEqual([basename(path)]);
+  });
+
+  it("writes no output file when the encode fails and nothing was there before", async () => {
+    const { path, result } = renderMp4({ encoder: "x264" }, "write-then-fail");
+
+    await expect(result).rejects.toThrow(/ffmpeg exited with status 1/);
+    expect(filesFor(path)).toEqual([]);
+  });
+
+  it("removes the failed NVENC partial file and encodes the retry to a fresh one", async () => {
+    // First attempt dies after opening its output; the x264 retry (not NVENC, so it succeeds) must
+    // start from nothing, and only its own file may end up at the output path.
+    const { path, result } = renderMp4({ encoder: "nvenc" }, "write-then-fail-nvenc", 100, {
+      existing: "my file",
+    });
+    const res = await result;
+
+    expect(res.encoder).toBe("libx264");
+    const invocations = rawFfmpegInvocations();
+    expect(invocations).toHaveLength(2);
+    for (const argv of invocations) expect(argv[argv.length - 1]).toMatch(partialPathFor(path));
+    expect(readFileSync(path, "utf8")).toBe("fake encode");
+    expect(filesFor(path)).toEqual([basename(path)]);
+  });
+
+  it("removes the temporary file when the render itself fails", async () => {
+    const { path, result } = renderMp4({ encoder: "x264" }, "drain", 100, {
+      artboard: "no such artboard",
+      existing: "my file",
+    });
+
+    await expect(result).rejects.toThrow(/artboard/i);
+    expect(readFileSync(path, "utf8")).toBe("my file");
+    expect(filesFor(path)).toEqual([basename(path)]);
   });
 });
 

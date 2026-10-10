@@ -344,7 +344,9 @@ interface RenderResult {
 
 ### GPU Rendering and Encoding
 
-**Frames are streamed.** Each frame goes to ffmpeg as soon as it is drawn, through a queue of 4 frames, and the next frame is drawn while ffmpeg encodes the previous ones. Memory use does not grow with the frame count (a 240-frame 1080p render used to hold about 2 GB of raw pixels), and a slow encoder slows the render down instead of piling frames up.
+**Frames are streamed.** Each frame goes to ffmpeg as soon as it is drawn, through a queue of 4 frames, and the next frame is drawn while ffmpeg encodes the previous ones. In rive_render, memory use does not grow with the frame count (a 240-frame 1080p render used to hold about 2 GB of raw pixels), and a slow encoder slows the render down instead of piling frames up. That bound covers rive_render itself, not the ffmpeg child, and it holds for mp4 and webm. For gif, ffmpeg's `palettegen` builds one palette from the whole animation, so ffmpeg keeps every frame until `paletteuse` can run, and a long gif still uses memory proportional to its frame count (in ffmpeg, not in rive_render).
+
+**Output files.** ffmpeg writes to a temporary file next to the requested output (`<name>.partial-<pid>.<ext>`), which replaces the output only after ffmpeg finished successfully. A failed encode removes only that temporary file, so a file already at the output path is never deleted or truncated by a render that fails.
 
 **Vulkan driver (Linux).** The driver is chosen in this order, and the choice is logged to stderr (`rive-render: Vulkan ICD nvidia (...)`, then the GPU's name):
 
