@@ -1,15 +1,11 @@
 #include "headless_renderer.hpp"
 
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vulkan/vulkan.h>
 
-#ifdef __linux__
-#include <climits>
-#include <cstdlib>
-#include <unistd.h>
-#endif
-
+#include "device_select.hpp"
 #include "rive/renderer/rive_renderer.hpp"
 #include "rive/renderer/vulkan/render_context_vulkan_impl.hpp"
 #include "rive/renderer/vulkan/render_target_vulkan.hpp"
@@ -29,45 +25,25 @@ struct HeadlessRenderer::Impl
     rive::rcp<rive::gpu::RenderTargetVulkanImpl> renderTarget;
 };
 
-namespace
-{
-#ifdef __linux__
-// Point the Vulkan loader at the SwiftShader ICD shipped next to the
-// binary. Must run before rive_vk_bootstrap loads the Vulkan library.
-void enableBundledSwiftShader()
-{
-    char exePath[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len <= 0)
-    {
-        return;
-    }
-    exePath[len] = '\0';
-    std::string dir(exePath);
-    auto slash = dir.rfind('/');
-    if (slash == std::string::npos)
-    {
-        return;
-    }
-    std::string icdPath = dir.substr(0, slash) + "/vk_swiftshader_icd.json";
-    setenv("VK_ICD_FILENAMES", icdPath.c_str(), 1);
-}
-#endif
-} // namespace
-
 HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
     : m_impl(std::make_unique<Impl>()), m_width(width), m_height(height)
 {
     using namespace rive_vkb;
 
-#ifdef __linux__
-    if (useSwiftShader)
+    // Choose the Vulkan driver (NVIDIA GPU, bundled SwiftShader or the loader default) before
+    // rive_vk_bootstrap loads the Vulkan library. Logged to stderr: stdout carries the JSON result.
+    // Only the first renderer of the process logs; an NVENC fallback builds a second one.
+    static bool logged = false;
+    IcdSelection icd = applyIcdSelection(selectIcd(currentIcdInputs(useSwiftShader)));
+    if (!logged)
     {
-        enableBundledSwiftShader();
+        std::cerr << "rive-render: Vulkan ICD " << icd.kind;
+        if (!icd.icdPath.empty())
+        {
+            std::cerr << " (" << icd.icdPath << ")";
+        }
+        std::cerr << std::endl;
     }
-#else
-    (void)useSwiftShader;
-#endif
 
     m_impl->instance = VulkanInstance::Create(VulkanInstance::Options{
         .appName = "rive-render",
@@ -85,6 +61,11 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
     {
         throw std::runtime_error("Failed to create Vulkan device. Is a Vulkan driver "
                                  "(or SwiftShader) available?");
+    }
+    if (!logged)
+    {
+        std::cerr << "rive-render: Vulkan device " << m_impl->device->name() << std::endl;
+        logged = true;
     }
 
     auto vkImpl = RenderContextVulkanImpl::MakeContext(

@@ -19,6 +19,13 @@ struct OutputConfig
     float fps = 30.0f;
     float duration = 0.0f;
     int quality = 90;
+
+    // mp4 only (ignored for gif, webm and png). Validated by Config::parse.
+    std::string encoder = "auto";    // "auto", "nvenc" or "x264"
+    std::string preset = "veryfast"; // x264 preset
+    std::string nvencPreset = "p4";  // NVENC preset, "p1".."p7"
+    // Single-threaded x264 (and libvpx for webm) for byte-reproducible output.
+    bool deterministic = false;
 };
 
 // One entry inside a `{ "type": "list" }` PropertyValue.

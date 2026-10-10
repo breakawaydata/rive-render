@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 extern char** environ;
 
@@ -112,19 +113,10 @@ pid_t waitForChild(pid_t pid, int* status)
 
 } // namespace
 
-void runFfmpegWithFrames(const std::string& ffmpegPath, const std::vector<std::string>& args,
-                         int width, int height, const std::vector<std::vector<uint8_t>>& frames,
-                         const std::string& what)
+FfmpegEncoder::FfmpegEncoder(const std::string& ffmpegPath, const std::vector<std::string>& args,
+                             int width, int height, const std::string& what)
+    : m_what(what), m_frameBytes(static_cast<size_t>(width) * height * 4)
 {
-    size_t expectedSize = static_cast<size_t>(width) * height * 4;
-    for (const auto& frame : frames)
-    {
-        if (frame.size() < expectedSize)
-        {
-            throw std::runtime_error("Frame pixel buffer too small");
-        }
-    }
-
     // A write to a pipe whose reader (ffmpeg) has exited raises SIGPIPE, which would kill this
     // process before it can report anything. Ignore it so write() fails with EPIPE instead;
     // the child gets SIGPIPE reset to default below.
@@ -182,98 +174,196 @@ void runFfmpegWithFrames(const std::string& ffmpegPath, const std::vector<std::s
     {
         closeFd(inPipe[1]);
         closeFd(errPipe[0]);
-        throw std::runtime_error("Failed to launch ffmpeg (" + ffmpegPath + "): " +
-                                 std::strerror(spawnErr) + ". Is ffmpeg installed and in PATH?");
+        throw FfmpegError("Failed to launch ffmpeg (" + ffmpegPath +
+                          "): " + std::strerror(spawnErr) + ". Is ffmpeg installed and in PATH?");
     }
+    m_pid = pid;
+    m_stdinFd = inPipe[1];
+    m_stderrFd = errPipe[0];
 
-    // Drain stderr on a thread so a chatty ffmpeg can never block on a full stderr pipe while
-    // we block writing its stdin.
-    std::string captured;
-    std::mutex capturedMutex;
-    int errFd = errPipe[0];
-    auto drainStderr = [errFd, &captured, &capturedMutex]()
-    {
-        char buf[4096];
-        for (;;)
-        {
-            ssize_t n = read(errFd, buf, sizeof(buf));
-            if (n < 0 && errno == EINTR)
-            {
-                continue;
-            }
-            if (n <= 0)
-            {
-                break;
-            }
-            std::lock_guard<std::mutex> lock(capturedMutex);
-            captured.append(buf, static_cast<size_t>(n));
-            if (captured.size() > kStderrCap)
-            {
-                captured.erase(0, captured.size() - kStderrCap);
-            }
-        }
-    };
-    std::thread stderrReader;
     try
     {
-        stderrReader = std::thread(drainStderr);
+        // Drain stderr on a thread so a chatty ffmpeg can never block on a full stderr pipe
+        // while we block writing its stdin.
+        m_stderrReader = std::thread(
+            [this]()
+            {
+                char buf[4096];
+                for (;;)
+                {
+                    ssize_t n = read(m_stderrFd, buf, sizeof(buf));
+                    if (n < 0 && errno == EINTR)
+                    {
+                        continue;
+                    }
+                    if (n <= 0)
+                    {
+                        break;
+                    }
+                    std::lock_guard<std::mutex> lock(m_stderrMutex);
+                    m_stderrCaptured.append(buf, static_cast<size_t>(n));
+                    if (m_stderrCaptured.size() > kStderrCap)
+                    {
+                        m_stderrCaptured.erase(0, m_stderrCaptured.size() - kStderrCap);
+                    }
+                }
+            });
+        m_writer = std::thread([this]() { writerLoop(); });
     }
     catch (const std::exception& e)
     {
-        // ffmpeg is already running: give it EOF, collect it, then report.
-        closeFd(inPipe[1]);
-        closeFd(errPipe[0]);
-        int ignored = 0;
-        waitForChild(pid, &ignored);
-        throw std::runtime_error(std::string("Failed to start ffmpeg stderr reader: ") + e.what());
+        // ffmpeg is already running: stop it and collect it, then report.
+        shutdown(true);
+        throw FfmpegError(std::string("Failed to start ffmpeg helper threads: ") + e.what());
+    }
+}
+
+FfmpegEncoder::~FfmpegEncoder()
+{
+    // A no-op after finish() or a reported failure; otherwise we are unwinding from an error and
+    // ffmpeg is still waiting for frames, so it is killed instead of finishing a truncated file.
+    shutdown(true);
+}
+
+void FfmpegEncoder::writerLoop()
+{
+    for (;;)
+    {
+        std::vector<uint8_t> frame;
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_notEmpty.wait(lock, [this] { return !m_queue.empty() || m_closed; });
+            if (m_queue.empty())
+            {
+                return; // closed and drained
+            }
+            frame = std::move(m_queue.front());
+            m_queue.pop_front();
+            m_notFull.notify_one();
+        }
+        if (!writeAll(m_stdinFd, frame.data(), m_frameBytes))
+        {
+            int err = errno;
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_writeFailed = true;
+            m_writeErrno = err;
+            m_queue.clear();
+            m_notFull.notify_all();
+            return;
+        }
+    }
+}
+
+void FfmpegEncoder::push(std::vector<uint8_t>&& frame)
+{
+    if (frame.size() < m_frameBytes)
+    {
+        throw std::runtime_error("Frame pixel buffer too small");
     }
 
-    bool writeFailed = false;
-    int writeErrno = 0;
-    for (const auto& frame : frames)
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_notFull.wait(lock, [this] { return m_queue.size() < kQueueCapacity || m_writeFailed; });
+    if (m_writeFailed)
     {
-        if (!writeAll(inPipe[1], frame.data(), expectedSize))
+        // EPIPE means ffmpeg already closed its stdin and is exiting on its own; any other write
+        // error leaves it in an unknown state, so it is killed.
+        bool killChild = m_writeErrno != EPIPE;
+        lock.unlock();
+        shutdown(killChild);
+        throw FfmpegError(failureMessage());
+    }
+    m_queue.push_back(std::move(frame));
+    m_notEmpty.notify_one();
+}
+
+void FfmpegEncoder::finish()
+{
+    shutdown(false);
+    std::string message = failureMessage();
+    if (!message.empty())
+    {
+        throw FfmpegError(message);
+    }
+}
+
+void FfmpegEncoder::shutdown(bool killChild)
+{
+    if (m_reaped)
+    {
+        return;
+    }
+    if (killChild && m_pid > 0)
+    {
+        kill(m_pid, SIGKILL);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_closed = true;
+        if (killChild)
         {
-            writeFailed = true;
-            writeErrno = errno;
-            break;
+            m_queue.clear();
         }
+    }
+    m_notEmpty.notify_all();
+    m_notFull.notify_all();
+    if (m_writer.joinable())
+    {
+        m_writer.join();
     }
     // EOF on stdin tells ffmpeg the stream is complete.
-    closeFd(inPipe[1]);
+    closeFd(m_stdinFd);
 
-    int status = 0;
-    pid_t waited = waitForChild(pid, &status);
-
-    stderrReader.join();
-    closeFd(errPipe[0]);
-
-    std::string reason;
-    if (waited < 0)
+    if (m_pid > 0)
     {
-        reason = std::string("waitpid failed: ") + std::strerror(errno);
-    }
-    else if (WIFSIGNALED(status))
-    {
-        reason = "ffmpeg was killed by signal " + std::to_string(WTERMSIG(status));
-    }
-    else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-    {
-        reason = "ffmpeg exited with status " + std::to_string(WEXITSTATUS(status));
-    }
-    else if (writeFailed)
-    {
-        reason = std::string("Failed to write frame data to ffmpeg: ") + std::strerror(writeErrno);
-    }
-
-    if (!reason.empty())
-    {
-        std::string message = reason + " during " + what;
-        std::string tail = stderrTail(captured);
-        if (!tail.empty())
+        if (waitForChild(m_pid, &m_status) < 0)
         {
-            message += ". ffmpeg stderr:\n" + tail;
+            m_waitFailed = true;
+            m_waitErrno = errno;
         }
-        throw std::runtime_error(message);
     }
+    m_reaped = true;
+
+    if (m_stderrReader.joinable())
+    {
+        m_stderrReader.join();
+    }
+    closeFd(m_stderrFd);
+}
+
+std::string FfmpegEncoder::failureMessage()
+{
+    std::string reason;
+    if (m_waitFailed)
+    {
+        reason = std::string("waitpid failed: ") + std::strerror(m_waitErrno);
+    }
+    else if (WIFSIGNALED(m_status))
+    {
+        reason = "ffmpeg was killed by signal " + std::to_string(WTERMSIG(m_status));
+    }
+    else if (WIFEXITED(m_status) && WEXITSTATUS(m_status) != 0)
+    {
+        reason = "ffmpeg exited with status " + std::to_string(WEXITSTATUS(m_status));
+    }
+    else if (m_writeFailed)
+    {
+        reason =
+            std::string("Failed to write frame data to ffmpeg: ") + std::strerror(m_writeErrno);
+    }
+
+    if (reason.empty())
+    {
+        return "";
+    }
+    std::string message = reason + " during " + m_what;
+    std::string tail;
+    {
+        std::lock_guard<std::mutex> lock(m_stderrMutex);
+        tail = stderrTail(m_stderrCaptured);
+    }
+    if (!tail.empty())
+    {
+        message += ". ffmpeg stderr:\n" + tail;
+    }
+    return message;
 }

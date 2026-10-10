@@ -15,7 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -23,6 +25,8 @@
 #include <curl/curl.h>
 
 #include "config.hpp"
+#include "device_select.hpp"
+#include "ffmpeg_process.hpp"
 #include "output_gif.hpp"
 #include "output_png.hpp"
 #include "output_video.hpp"
@@ -87,7 +91,8 @@ static std::string jsonEscape(const std::string& in)
 }
 
 static void outputJson(bool success, const std::string& outputPath = "", int frameCount = 0,
-                       const std::string& error = "", int width = 0, int height = 0)
+                       const std::string& error = "", int width = 0, int height = 0,
+                       const std::string& encoder = "", const std::string& encoderFallback = "")
 {
     std::cout << "{\"success\":" << (success ? "true" : "false");
     if (!outputPath.empty())
@@ -96,9 +101,150 @@ static void outputJson(bool success, const std::string& outputPath = "", int fra
         std::cout << ",\"frameCount\":" << frameCount;
     if (width > 0 && height > 0)
         std::cout << ",\"width\":" << width << ",\"height\":" << height;
+    if (!encoder.empty())
+        std::cout << ",\"encoder\":\"" << jsonEscape(encoder) << "\"";
+    if (!encoderFallback.empty())
+        std::cout << ",\"encoderFallback\":\"" << jsonEscape(encoderFallback) << "\"";
     if (!error.empty())
         std::cout << ",\"error\":\"" << jsonEscape(error) << "\"";
     std::cout << "}" << std::endl;
+}
+
+// An error message on one line (its last 600 characters), for the stderr log and the result's
+// encoderFallback field.
+static std::string oneLine(const std::string& message)
+{
+    constexpr size_t kMaxLength = 600;
+    std::string out;
+    for (char c : message)
+    {
+        if (c == '\n' || c == '\r')
+        {
+            if (!out.empty() && out.back() != ' ')
+                out += " | ";
+        }
+        else
+            out += c;
+    }
+    if (out.size() > kMaxLength)
+        out = "..." + out.substr(out.size() - kMaxLength); // the end is where ffmpeg's error is
+    return out;
+}
+
+// What `--select-device` prints: the Vulkan driver and the video encoder this host would use,
+// decided without rendering or touching Vulkan.
+static void outputSelectDevice(const Config& config)
+{
+    const IcdInputs inputs = currentIcdInputs(config.swiftshader);
+    const IcdSelection icd = selectIcd(inputs);
+    std::string encoder;
+    if (config.output.format == "gif")
+        encoder = "gif";
+    else
+        encoder = videoCodecName(resolveVideoCodec(config.output, autoSelectsNvenc(inputs, icd)));
+
+    std::cout << "{\"success\":true,\"icd\":\"" << jsonEscape(icd.kind) << "\"";
+    if (!icd.icdPath.empty())
+        std::cout << ",\"icdFile\":\"" << jsonEscape(icd.icdPath) << "\"";
+    std::cout << ",\"encoder\":\"" << jsonEscape(encoder) << "\"}" << std::endl;
+}
+
+// Render `config` into the ffmpeg process `open` starts, streaming each frame as it is drawn.
+// Returns the frame count. A partial output file is removed when anything fails.
+static int renderIntoEncoder(const Config& config, const std::vector<uint8_t>& rivBytes,
+                             const std::function<std::unique_ptr<FfmpegEncoder>()>& open)
+{
+    auto encoder = open();
+    int frames = 0;
+    try
+    {
+        renderWithQueue(config, rivBytes,
+                        [&](std::vector<uint8_t>&& frame)
+                        {
+                            encoder->push(std::move(frame));
+                            frames++;
+                        });
+        if (frames == 0)
+            throw std::runtime_error("No frames to encode");
+        encoder->finish();
+    }
+    catch (...)
+    {
+        encoder.reset(); // kills and reaps ffmpeg before the file is removed
+        std::remove(config.output.path.c_str());
+        throw;
+    }
+    return frames;
+}
+
+struct VideoOutcome
+{
+    int frames = 0;
+    std::string codec;
+    std::string fallbackReason;
+};
+
+static VideoOutcome renderVideoFile(const Config& config, const std::vector<uint8_t>& rivBytes,
+                                    bool autoNvenc)
+{
+    const auto& out = config.output;
+    VideoEncodeOptions options;
+    options.codec = resolveVideoCodec(out, autoNvenc);
+    options.preset = out.preset;
+    options.nvencPreset = out.nvencPreset;
+    options.deterministic = out.deterministic;
+
+    auto attempt = [&](const VideoEncodeOptions& opts)
+    {
+        return renderIntoEncoder(config, rivBytes,
+                                 [&]()
+                                 {
+                                     return openVideoEncoder(out.path, config.width, config.height,
+                                                             out.fps, out.format, opts,
+                                                             config.ffmpegPath);
+                                 });
+    };
+
+    VideoOutcome outcome;
+    if (options.codec != VideoCodec::Nvenc)
+    {
+        outcome.frames = attempt(options);
+        outcome.codec = videoCodecName(options.codec);
+        return outcome;
+    }
+
+    // NVENC can fail for reasons only the host knows (no usable GPU, driver, session limit, an
+    // ffmpeg built without it). Rendering is deterministic and fast on the GPU, so redo the whole
+    // render with x264 once instead of failing the job.
+    std::string reason;
+    try
+    {
+        outcome.frames = attempt(options);
+        outcome.codec = videoCodecName(VideoCodec::Nvenc);
+        return outcome;
+    }
+    catch (const FfmpegError& e)
+    {
+        reason = oneLine(e.what());
+    }
+    std::cerr << "rive-render: h264_nvenc encode failed (" << reason << "); retrying with libx264"
+              << std::endl;
+
+    options.codec = VideoCodec::X264;
+    try
+    {
+        outcome.frames = attempt(options);
+    }
+    catch (const std::exception& e)
+    {
+        throw std::runtime_error("h264_nvenc failed (" + reason +
+                                 "), and the libx264 fallback "
+                                 "failed too: " +
+                                 e.what());
+    }
+    outcome.codec = videoCodecName(VideoCodec::X264);
+    outcome.fallbackReason = reason;
+    return outcome;
 }
 
 int main(int argc, char* argv[])
@@ -117,10 +263,21 @@ int main(int argc, char* argv[])
     try
     {
         // Read JSON config from stdin (or --config file)
-        std::string jsonStr;
-        if (argc > 2 && std::string(argv[1]) == "--config")
+        std::string configFile;
+        bool selectDevice = false;
+        for (int a = 1; a < argc; a++)
         {
-            std::ifstream f(argv[2]);
+            const std::string arg = argv[a];
+            if (arg == "--config" && a + 1 < argc)
+                configFile = argv[++a];
+            else if (arg == "--select-device")
+                selectDevice = true;
+        }
+
+        std::string jsonStr;
+        if (!configFile.empty())
+        {
+            std::ifstream f(configFile);
             std::ostringstream ss;
             ss << f.rdbuf();
             jsonStr = ss.str();
@@ -137,21 +294,34 @@ int main(int argc, char* argv[])
         }
 
         auto config = Config::parse(jsonStr);
+        if (selectDevice)
+        {
+            outputSelectDevice(config);
+            return 0;
+        }
+
         auto rivBytes = readFileBytes(config.rivFile);
         resolveCanvasSize(config, rivBytes);
         const int w = config.width;
         const int h = config.height;
 
-        auto result = renderWithQueue(config, rivBytes);
+        // A screenshot and a png output are one frame: keep it for writePng.
+        std::vector<uint8_t> singleFrame;
+        auto keepFirstFrame = [&singleFrame](std::vector<uint8_t>&& frame)
+        {
+            if (singleFrame.empty())
+                singleFrame = std::move(frame);
+        };
 
         if (config.hasScreenshot())
         {
-            if (result.frames.empty())
+            renderWithQueue(config, rivBytes, keepFirstFrame);
+            if (singleFrame.empty())
             {
                 outputJson(false, "", 0, "No frame produced for screenshot");
                 return 1;
             }
-            writePng(config.screenshot.path, config.width, config.height, result.frames[0]);
+            writePng(config.screenshot.path, config.width, config.height, singleFrame);
             outputJson(true, config.screenshot.path, 1, "", w, h);
             return 0;
         }
@@ -161,27 +331,33 @@ int main(int argc, char* argv[])
             const auto& format = config.output.format;
             if (format == "png")
             {
-                if (result.frames.empty())
+                renderWithQueue(config, rivBytes, keepFirstFrame);
+                if (singleFrame.empty())
                 {
                     outputJson(false, "", 0, "No frame produced for png output");
                     return 1;
                 }
-                writePng(config.output.path, config.width, config.height, result.frames[0]);
+                writePng(config.output.path, config.width, config.height, singleFrame);
                 outputJson(true, config.output.path, 1, "", w, h);
             }
             else if (format == "gif")
             {
-                writeGif(config.output.path, config.width, config.height, config.output.fps,
-                         result.frames, config.ffmpegPath);
-                outputJson(true, config.output.path, static_cast<int>(result.frames.size()), "", w,
-                           h);
+                int frames = renderIntoEncoder(
+                    config, rivBytes,
+                    [&]()
+                    {
+                        return openGifEncoder(config.output.path, config.width, config.height,
+                                              config.output.fps, config.ffmpegPath);
+                    });
+                outputJson(true, config.output.path, frames, "", w, h, "gif");
             }
             else if (format == "mp4" || format == "webm")
             {
-                writeVideo(config.output.path, config.width, config.height, config.output.fps,
-                           result.frames, format, config.ffmpegPath);
-                outputJson(true, config.output.path, static_cast<int>(result.frames.size()), "", w,
-                           h);
+                const IcdInputs inputs = currentIcdInputs(config.swiftshader);
+                auto video =
+                    renderVideoFile(config, rivBytes, autoSelectsNvenc(inputs, selectIcd(inputs)));
+                outputJson(true, config.output.path, video.frames, "", w, h, video.codec,
+                           video.fallbackReason);
             }
             else
             {

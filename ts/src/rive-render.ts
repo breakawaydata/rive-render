@@ -8,6 +8,7 @@ import type {
   ViewModelDataConfig,
   AssetConfig,
   ExtraFileConfig,
+  OutputConfig,
 } from "./types.js";
 
 export class RiveRenderError extends Error {
@@ -272,6 +273,14 @@ export class RiveRenderer {
       height?: number;
       fps?: number;
       duration: number;
+      /** See `OutputConfig.encoder`. */
+      encoder?: OutputConfig["encoder"];
+      /** See `OutputConfig.preset`. */
+      preset?: string;
+      /** See `OutputConfig.nvencPreset`. */
+      nvencPreset?: string;
+      /** See `OutputConfig.deterministic`. */
+      deterministic?: boolean;
       artboard?: string;
       stateMachine?: string;
       viewModelData?: ViewModelDataConfig;
@@ -292,6 +301,10 @@ export class RiveRenderer {
           path: options.outputPath,
           fps: options.fps ?? 60,
           duration: options.duration,
+          encoder: options.encoder,
+          preset: options.preset,
+          nvencPreset: options.nvencPreset,
+          deterministic: options.deterministic,
         },
         viewModelData: options.viewModelData,
         assets: options.assets,

@@ -39,6 +39,11 @@ const TMP = "/tmp/rive-snapshot-work";
 // __dirname at runtime = dist/test/, resolve to src/test/__file_snapshots__
 const FILE_SNAPSHOTS = resolve(__dirname, "..", "..", "src", "test", "__file_snapshots__");
 
+// The reference mp4s in FILE_SNAPSHOTS were encoded with libx264 preset medium on one thread, which
+// is `deterministic: true, preset: "medium"`. The default encoder is faster and not byte-stable,
+// so every byte-match mp4 test passes these options.
+const REFERENCE_MP4_ENCODING = { deterministic: true, preset: "medium" } as const;
+
 const cli = new RiveRenderer();
 
 beforeAll(() => {
@@ -118,6 +123,9 @@ async function renderToFile(
     height?: number;
     fps?: number;
     duration: number;
+    /** Single-threaded encode, so the file is byte-identical to the committed reference. */
+    deterministic?: boolean;
+    preset?: string;
   }
 ): Promise<string> {
   const ext = format === "gif" ? ".gif" : ".mp4";
@@ -131,6 +139,8 @@ async function renderToFile(
       path: out,
       fps: options.fps ?? (format === "gif" ? 10 : 30),
       duration: options.duration,
+      deterministic: options.deterministic,
+      preset: options.preset,
     },
   });
   return out;
@@ -283,12 +293,20 @@ describe("MP4 (LinearAnimation)", () => {
   };
 
   it("1s 30fps — full file match", async () => {
-    const mp4Path = await renderToFile("mp4", { fps: 30, duration: 1.0 });
+    const mp4Path = await renderToFile("mp4", {
+      fps: 30,
+      duration: 1.0,
+      ...REFERENCE_MP4_ENCODING,
+    });
     expectFileToMatchReference(mp4Path, "basketball-1s-30fps.mp4");
   });
 
   it("2s 30fps — full file match", async () => {
-    const mp4Path = await renderToFile("mp4", { fps: 30, duration: 2.0 });
+    const mp4Path = await renderToFile("mp4", {
+      fps: 30,
+      duration: 2.0,
+      ...REFERENCE_MP4_ENCODING,
+    });
     expectFileToMatchReference(mp4Path, "basketball-2s-30fps.mp4");
   });
 
@@ -406,6 +424,7 @@ describe("StateMachine", () => {
       rivFile: STATEMACHINE_RIV,
       fps: 30,
       duration: 1.0,
+      ...REFERENCE_MP4_ENCODING,
     });
     expectFileToMatchReference(mp4Path, "statemachine-1s-30fps.mp4");
   });

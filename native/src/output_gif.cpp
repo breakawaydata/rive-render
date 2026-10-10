@@ -1,18 +1,10 @@
 #include "output_gif.hpp"
 
-#include "ffmpeg_process.hpp"
-
 #include <sstream>
-#include <stdexcept>
 
-void writeGif(const std::string& outputPath, int width, int height, float fps,
-              const std::vector<std::vector<uint8_t>>& frames, const std::string& ffmpegPath)
+std::unique_ptr<FfmpegEncoder> openGifEncoder(const std::string& outputPath, int width, int height,
+                                              float fps, const std::string& ffmpegPath)
 {
-    if (frames.empty())
-    {
-        throw std::runtime_error("No frames to encode");
-    }
-
     // Formatted exactly as the old shell command line streamed them.
     std::ostringstream size;
     size << width << "x" << height;
@@ -42,5 +34,5 @@ void writeGif(const std::string& outputPath, int width, int height, float fps,
         outputPath,
     };
 
-    runFfmpegWithFrames(ffmpegPath, args, width, height, frames, "GIF encoding");
+    return std::make_unique<FfmpegEncoder>(ffmpegPath, args, width, height, "GIF encoding");
 }

@@ -132,8 +132,14 @@ await cli.renderVideo("file.riv", {
   artboard: "MyArtboard",      // optional
   viewModelData: { ... },      // optional
   assets: { ... },             // optional
+  encoder: "auto",             // mp4 only: "auto" | "nvenc" | "x264", default: "auto"
+  preset: "veryfast",          // x264 preset, default: "veryfast"
+  nvencPreset: "p4",           // NVENC preset "p1".."p7", default: "p4"
+  deterministic: false,        // single-threaded, byte-reproducible output, default: false
 });
 ```
+
+The result carries `encoder` (the ffmpeg codec that produced the file, e.g. `"libx264"` or `"h264_nvenc"`) and, when NVENC failed and x264 encoded instead, `encoderFallback` with the reason. See [GPU Rendering and Encoding](#gpu-rendering-and-encoding).
 
 ### View Model Data Binding
 
@@ -301,6 +307,10 @@ interface RiveRenderConfig {
     fps?: number;
     duration: number;
     quality?: number;
+    encoder?: "auto" | "nvenc" | "x264";  // mp4 only, default "auto"
+    preset?: string;                      // x264 preset, default "veryfast"
+    nvencPreset?: string;                 // "p1".."p7", default "p4"
+    deterministic?: boolean;              // default false
   };
   viewModelData?: {
     viewModel?: string;
@@ -317,8 +327,41 @@ interface RiveRenderConfig {
   }>;
   stateMachineInputs?: Record<string, boolean | number>;
   ffmpegPath?: string;
+  swiftshader?: boolean;  // Linux only: render with the bundled SwiftShader instead of a GPU
+}
+
+interface RenderResult {
+  success: boolean;
+  outputPath?: string;
+  frameCount?: number;
+  width?: number;
+  height?: number;
+  encoder?: string;          // ffmpeg codec used: "libx264", "h264_nvenc", "libvpx-vp9", "gif"
+  encoderFallback?: string;  // why x264 encoded instead of NVENC, when NVENC failed
+  error?: string;
 }
 ```
+
+### GPU Rendering and Encoding
+
+**Frames are streamed.** Each frame goes to ffmpeg as soon as it is drawn, through a queue of 4 frames, and the next frame is drawn while ffmpeg encodes the previous ones. Memory use does not grow with the frame count (a 240-frame 1080p render used to hold about 2 GB of raw pixels), and a slow encoder slows the render down instead of piling frames up.
+
+**Vulkan driver (Linux).** The driver is chosen in this order, and the choice is logged to stderr (`rive-render: Vulkan ICD nvidia (...)`, then the GPU's name):
+
+1. `swiftshader: true` uses the SwiftShader driver bundled next to the binary.
+2. A `VK_ICD_FILENAMES` or `VK_DRIVER_FILES` set in the caller's environment is left alone.
+3. If the NVIDIA device node `/dev/nvidiactl` exists, the NVIDIA driver is used: `nvidia_icd.json` next to the binary if there is one, otherwise a generated `rive-render-nvidia-icd-<uid>.json` in `$TMPDIR` (or `/tmp`), written to a temporary file and renamed into place so concurrent renders never read a half-written file. It needs no X11.
+4. Otherwise the bundled SwiftShader driver if it is next to the binary, else whatever the Vulkan loader finds.
+
+macOS always renders with Metal.
+
+**Encoder.** For mp4, `encoder: "auto"` (the default) uses NVENC (`h264_nvenc`, `-rc vbr -cq 23`) when `/dev/nvidiactl` exists and the render is on the GPU (not SwiftShader), and libx264 (`-crf 23`) otherwise, always libx264 on macOS. `"nvenc"` and `"x264"` force one. x264 defaults to the `veryfast` preset with ffmpeg's automatic thread count; `preset` picks another. webm is always libvpx-vp9 and gif always ffmpeg's gif encoder; `encoder` does not apply to them. The output is H.264 `yuv420p` at the requested size and frame rate either way.
+
+**NVENC fallback.** NVENC can fail on a host that looks right (driver, session limit, an ffmpeg built without it). If the encoder is NVENC and anything in the encode fails, rive-render logs one line to stderr and redoes the whole render once with x264, which on a GPU takes a few seconds. The result then says `encoder: "libx264"` and gives the NVENC error in `encoderFallback`. If the x264 attempt fails too, the error names both failures.
+
+**Deterministic output.** Multi-threaded x264 and libvpx rate control reads neighboring macroblocks in thread-scheduling order, so the same frames encode to different bytes on different CPU topologies. That broke byte-for-byte file snapshots in CI, and the encoders used to be pinned to one thread for it. That costs most of the encode speed, so it is now opt-in: `deterministic: true` encodes mp4 with libx264 on one thread (`-x264-params threads=1:sliced-threads=0`) and webm with `-threads 1 -row-mt 0`, and never uses NVENC (`encoder: "nvenc"` with `deterministic: true` is a config error). With `preset: "medium"` it reproduces the files made before these options existed bit for bit, which is what the committed MP4 snapshots use.
+
+To see what a host would pick without rendering, run `rive_render --select-device` with the usual JSON config on stdin; it prints `{"success":true,"icd":"nvidia","icdFile":"...","encoder":"h264_nvenc"}`. `RIVE_RENDER_NVIDIACTL_PATH` replaces the `/dev/nvidiactl` path for tests.
 
 ## Visual Regression Testing
 
@@ -360,7 +403,7 @@ it("matches reference", async () => {
 
 ### GIF/MP4 File Snapshots
 
-Full file comparison using SHA-256 hashes ensures byte-identical output:
+Full file comparison using SHA-256 hashes ensures byte-identical output. MP4 and WebM files are only byte-stable with `deterministic: true` (the default encoder uses every core), so pass it, with the same `preset` the reference was made with, for any MP4 you compare byte for byte:
 
 ```typescript
 import { createHash } from "crypto";
@@ -509,7 +552,7 @@ C++ CLI binary (rive_render)
     |
     +-- CommandQueue / CommandServer
     |     |  Client thread: config parsing, command submission, frame
-    |     |                 collection, output encoding
+    |     |                 streaming to the encoder
     |     +- Background server thread: owns all Rive objects (file,
     |        artboard, state machine, view model, assets). Processes
     |        commands FIFO and executes per-frame draw callbacks.
@@ -519,12 +562,16 @@ C++ CLI binary (rive_render)
     |     |     +-- offscreen MTLTexture + MTLBuffer blit readback
     |     +-- Linux: Vulkan backend
     |           +-- VulkanHeadlessFrameSynchronizer (offscreen rendering)
-    |           +-- real GPU driver, or bundled SwiftShader via `"swiftshader":true`
+    |           +-- ICD auto-selection: caller's VK_ICD_FILENAMES, NVIDIA GPU
+    |               (/dev/nvidiactl), bundled SwiftShader (`"swiftshader":true`
+    |               forces it), else the loader default
     |
-    +-- Output encoders
+    +-- Output encoders (frames streamed through a 4-frame queue)
           +-- PNG (stb_image_write)
           +-- GIF (ffmpeg palettegen/paletteuse)
-          +-- MP4/WebM (ffmpeg libx264/libvpx-vp9)
+          +-- MP4 (ffmpeg h264_nvenc on an NVIDIA GPU, else libx264;
+          |        NVENC failure redoes the render with libx264)
+          +-- WebM (ffmpeg libvpx-vp9)
 ```
 
 ### Why not Skia?
@@ -533,7 +580,7 @@ The Rive Skia renderer does not support [feathering](https://rive.app/blog/rive-
 
 ### Rendering pipeline
 
-rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`CommandServer` — the same pattern used by the official Rive iOS and Android runtimes. The `.riv` file is loaded with a custom `FileAssetLoader` that resolves asset overrides and CDN downloads during import, an artboard + state machine (or fallback linear animation) is instantiated, and each frame is advanced and rendered inside a draw callback that runs on the server thread. The client thread only submits commands and collects pixel buffers — no Rive object is ever touched from two threads. See [command_queue.hpp](https://github.com/rive-app/rive-runtime/blob/main/include/rive/command_queue.hpp) for the full API surface.
+rive-render delegates all Rive-object lifecycle to Rive's `CommandQueue`/`CommandServer` — the same pattern used by the official Rive iOS and Android runtimes. The `.riv` file is loaded with a custom `FileAssetLoader` that resolves asset overrides and CDN downloads during import, an artboard + state machine (or fallback linear animation) is instantiated, and each frame is advanced and rendered inside a draw callback that runs on the server thread. The client thread only submits commands and passes pixel buffers on to the encoder — no Rive object is ever touched from two threads. See [command_queue.hpp](https://github.com/rive-app/rive-runtime/blob/main/include/rive/command_queue.hpp) for the full API surface.
 
 ## Project Structure
 
@@ -547,10 +594,11 @@ rive-render/
 |   |   +-- headless_renderer_metal.mm   macOS Metal backend
 |   |   +-- headless_renderer_vulkan.cpp Linux Vulkan / SwiftShader backend
 |   |   +-- config.*                     JSON config parsing
+|   |   +-- device_select.*              Vulkan ICD and auto encoder selection
 |   |   +-- output_png.*        PNG encoding (stb_image_write)
 |   |   +-- output_gif.*        GIF via ffmpeg
-|   |   +-- output_video.*      MP4/WebM via ffmpeg
-|   |   +-- ffmpeg_process.*    Spawns ffmpeg without a shell
+|   |   +-- output_video.*      MP4/WebM via ffmpeg (encoder arguments)
+|   |   +-- ffmpeg_process.*    Streaming ffmpeg encoder, spawned without a shell
 |   +-- premake5.lua            Build configuration
 |
 +-- ts/                         TypeScript API package
@@ -561,7 +609,8 @@ rive-render/
 |   |   +-- binary-resolver.ts  Platform binary resolution
 |   |   +-- ffmpeg-resolver.ts  Find ffmpeg (PATH scan, cache, download)
 |   |   +-- test/
-|   |       +-- snapshot.test.ts            All tests
+|   |       +-- snapshot.test.ts            Render and snapshot tests
+|   |       +-- encoder.test.ts             Encoder arguments, NVENC fallback, ICD selection
 |   |       +-- __image_snapshots__/        Reference PNGs (committed)
 |   |       +-- __file_snapshots__/         Reference GIFs/MP4s (committed)
 |   +-- jest.config.js
