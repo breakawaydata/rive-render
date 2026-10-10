@@ -4,14 +4,17 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
-#include <sstream>
 
+#include <cerrno>
 #include <climits>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 
 namespace
 {
@@ -62,12 +65,38 @@ std::string binaryDirectory()
 #endif
 }
 
-std::string readFile(const std::string& path)
+// A directory only this user can use: created 0700 if missing, then checked with lstat so a
+// symlink, a directory owned by someone else, or a group/world-writable one is refused.
+bool ensurePrivateDirectory(const std::string& dir)
 {
-    std::ifstream f(path, std::ios::binary);
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+    if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST)
+    {
+        return false;
+    }
+    struct stat st;
+    if (lstat(dir.c_str(), &st) != 0)
+    {
+        return false;
+    }
+    return S_ISDIR(st.st_mode) && st.st_uid == getuid() && (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+// Whether the NVIDIA Vulkan driver library can be loaded.
+bool nvidiaVulkanLibraryAvailable()
+{
+    std::string override = envOrEmpty(RIVE_RENDER_NVIDIA_VULKAN_LIB_ENV);
+    if (override == "0" || override == "1")
+    {
+        return override == "1";
+    }
+#ifdef __linux__
+    if (void* handle = dlopen("libEGL_nvidia.so.0", RTLD_LAZY | RTLD_LOCAL))
+    {
+        dlclose(handle);
+        return true;
+    }
+#endif
+    return false;
 }
 
 // Write `content` to `path` through a temp file in the same directory and rename() it into place,
@@ -113,6 +142,15 @@ const char* nvidiaIcdJson()
     return R"({"file_format_version":"1.0.1","ICD":{"library_path":"libEGL_nvidia.so.0","api_version":"1.4.312"}})";
 }
 
+IcdSelection fallbackIcd(const IcdInputs& in)
+{
+    if (in.bundledSwiftshaderIcdExists)
+    {
+        return {"swiftshader", joinPath(in.binaryDir, kSwiftShaderIcdName), false};
+    }
+    return {"default", "", false};
+}
+
 IcdSelection selectIcd(const IcdInputs& in)
 {
     if (in.metal)
@@ -130,7 +168,7 @@ IcdSelection selectIcd(const IcdInputs& in)
     {
         return {"caller", "", false};
     }
-    if (in.nvidiaDeviceNode)
+    if (in.nvidiaDeviceNode && in.nvidiaVulkanLibrary)
     {
         if (in.bundledNvidiaIcdExists)
         {
@@ -141,14 +179,10 @@ IcdSelection selectIcd(const IcdInputs& in)
         {
             tmp.pop_back();
         }
-        return {"nvidia", tmp + "/rive-render-nvidia-icd-" + std::to_string(in.uid) + ".json",
+        return {"nvidia", tmp + "/rive-render-" + std::to_string(in.uid) + "/" + kNvidiaIcdName,
                 true};
     }
-    if (in.bundledSwiftshaderIcdExists)
-    {
-        return {"swiftshader", joinPath(in.binaryDir, kSwiftShaderIcdName), false};
-    }
-    return {"default", "", false};
+    return fallbackIcd(in);
 }
 
 bool autoSelectsNvenc(const IcdInputs& in, const IcdSelection& selection)
@@ -176,6 +210,7 @@ IcdInputs currentIcdInputs(bool swiftshader)
 #endif
     std::string nvidiaCtl = envOrEmpty(RIVE_RENDER_NVIDIACTL_PATH_ENV);
     in.nvidiaDeviceNode = fileExists(nvidiaCtl.empty() ? kDefaultNvidiaCtlPath : nvidiaCtl);
+    in.nvidiaVulkanLibrary = in.nvidiaDeviceNode && nvidiaVulkanLibraryAvailable();
     in.binaryDir = binaryDirectory();
     in.bundledNvidiaIcdExists = fileExists(joinPath(in.binaryDir, kNvidiaIcdName));
     in.bundledSwiftshaderIcdExists = fileExists(joinPath(in.binaryDir, kSwiftShaderIcdName));
@@ -186,6 +221,13 @@ IcdInputs currentIcdInputs(bool swiftshader)
 
 IcdSelection applyIcdSelection(const IcdSelection& selection)
 {
+    if (selection.kind == "default")
+    {
+        // Only reached when the caller set no ICD of their own (otherwise the kind is "caller"),
+        // so anything in VK_ICD_FILENAMES is our earlier override.
+        unsetenv("VK_ICD_FILENAMES");
+        return selection;
+    }
     if (selection.kind != "nvidia" && selection.kind != "swiftshader")
     {
         return selection;
@@ -194,12 +236,15 @@ IcdSelection applyIcdSelection(const IcdSelection& selection)
     {
         return selection;
     }
-    if (selection.generate && readFile(selection.icdPath) != nvidiaIcdJson())
+    if (selection.generate)
     {
-        if (!writeFileAtomically(selection.icdPath, nvidiaIcdJson()))
+        std::string dir = selection.icdPath.substr(0, selection.icdPath.rfind('/'));
+        if (!ensurePrivateDirectory(dir) ||
+            !writeFileAtomically(selection.icdPath, nvidiaIcdJson()))
         {
-            std::cerr << "rive-render: could not write " << selection.icdPath
+            std::cerr << "rive-render: could not safely write " << selection.icdPath
                       << "; leaving the Vulkan loader default" << std::endl;
+            unsetenv("VK_ICD_FILENAMES");
             return {"default", "", false};
         }
     }

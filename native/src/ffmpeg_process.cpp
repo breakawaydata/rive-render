@@ -337,6 +337,13 @@ std::string FfmpegEncoder::failureMessage()
     {
         reason = std::string("waitpid failed: ") + std::strerror(m_waitErrno);
     }
+    else if (m_writeFailed && m_writeErrno != EPIPE)
+    {
+        // A write error other than EPIPE got ffmpeg killed (see push), so the real cause is the
+        // errno, not the "killed by signal 9" it left behind.
+        reason =
+            std::string("Failed to write frame data to ffmpeg: ") + std::strerror(m_writeErrno);
+    }
     else if (WIFSIGNALED(m_status))
     {
         reason = "ffmpeg was killed by signal " + std::to_string(WTERMSIG(m_status));

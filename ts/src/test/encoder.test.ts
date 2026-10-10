@@ -64,6 +64,7 @@ const touchedEnv = [
   "FAKE_FFMPEG_PID_FILE",
   "REAL_FFMPEG",
   "RIVE_RENDER_NVIDIACTL_PATH",
+  "RIVE_RENDER_NVIDIA_VULKAN_LIB",
   "VK_ICD_FILENAMES",
   "VK_DRIVER_FILES",
 ];
@@ -96,6 +97,9 @@ beforeEach(() => {
   process.env.REAL_FFMPEG = realFfmpeg;
   // "auto" must not depend on the machine running the tests: no NVIDIA device node, no caller ICD.
   process.env.RIVE_RENDER_NVIDIACTL_PATH = join(work, "no-such-nvidiactl");
+  // Even when a test fakes the device node, a real render must not be pointed at the NVIDIA ICD:
+  // this host has no NVIDIA Vulkan driver, and a loader limited to that ICD finds no device.
+  process.env.RIVE_RENDER_NVIDIA_VULKAN_LIB = "0";
   delete process.env.VK_ICD_FILENAMES;
   delete process.env.VK_DRIVER_FILES;
 });
@@ -216,8 +220,10 @@ describe("ffmpeg arguments", () => {
     const { result } = renderMp4({}, "drain");
     const res = await result;
 
-    // macOS renders with Metal and always encodes with x264.
-    expect(res.encoder).toBe(IS_MAC ? "libx264" : "h264_nvenc");
+    // macOS renders with Metal and always encodes with x264, and so does a render that lands on
+    // the bundled SwiftShader (the fake device node is not a GPU).
+    const onSwiftShader = existsSync(join(dirname(resolveBinary()), "vk_swiftshader_icd.json"));
+    expect(res.encoder).toBe(IS_MAC || onSwiftShader ? "libx264" : "h264_nvenc");
   });
 
   it("webm: automatic threads by default, one thread when deterministic", async () => {
@@ -314,10 +320,14 @@ describe("NVENC fallback", () => {
     const { result } = renderMp4({ encoder: "nvenc" }, "drain", 100, { artboard: "no such artboard" });
 
     await expect(result).rejects.toThrow(/artboard/i);
-    expect(ffmpegInvocations()).toHaveLength(1);
+    // The kill can land before the fake ffmpeg (a node script) has written its argv log or pid
+    // file, so both are optional; what matters is that it was started at most once.
+    expect(ffmpegInvocations().length).toBeLessThanOrEqual(1);
 
-    const pid = Number(readFileSync(pidFile, "utf8"));
-    expect(isAlive(pid)).toBe(false);
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      expect(isAlive(pid)).toBe(false);
+    }
   });
 });
 
@@ -342,7 +352,7 @@ describe("device and encoder selection (--select-device)", () => {
     success: boolean;
     icd: string;
     icdFile?: string;
-    encoder: string;
+    encoder?: string;
   }
 
   function select(
@@ -353,6 +363,7 @@ describe("device and encoder selection (--select-device)", () => {
     delete merged.VK_ICD_FILENAMES;
     delete merged.VK_DRIVER_FILES;
     delete merged.RIVE_RENDER_NVIDIACTL_PATH;
+    delete merged.RIVE_RENDER_NVIDIA_VULKAN_LIB;
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) delete merged[key];
       else merged[key] = value;
@@ -379,9 +390,13 @@ describe("device and encoder selection (--select-device)", () => {
     writeFileSync(deviceNode, "");
   });
 
-  it("an NVIDIA device node selects the nvidia ICD and NVENC", () => {
+  it("an NVIDIA device node and driver library select the nvidia ICD and NVENC", () => {
     const tmp = mkdtempSync(join(work, "tmp-"));
-    const sel = select({}, { RIVE_RENDER_NVIDIACTL_PATH: deviceNode, TMPDIR: tmp });
+    const sel = select({}, {
+      RIVE_RENDER_NVIDIACTL_PATH: deviceNode,
+      RIVE_RENDER_NVIDIA_VULKAN_LIB: "1",
+      TMPDIR: tmp,
+    });
 
     if (IS_MAC) {
       expect(sel.icd).toBe("metal");
@@ -392,8 +407,46 @@ describe("device and encoder selection (--select-device)", () => {
     expect(sel.encoder).toBe("h264_nvenc");
     const bundled = join(dirname(resolveBinary()), "nvidia_icd.json");
     expect(sel.icdFile).toBe(
-      existsSync(bundled) ? bundled : join(tmp, `rive-render-nvidia-icd-${process.getuid?.()}.json`)
+      existsSync(bundled) ? bundled : join(tmp, `rive-render-${process.getuid?.()}`, "nvidia_icd.json")
     );
+  });
+
+  it("a device node without the NVIDIA Vulkan library falls through to SwiftShader or the default", () => {
+    // GPU containers started with NVIDIA_DRIVER_CAPABILITIES=compute,utility look like this.
+    const sel = select({}, {
+      RIVE_RENDER_NVIDIACTL_PATH: deviceNode,
+      RIVE_RENDER_NVIDIA_VULKAN_LIB: "0",
+    });
+
+    if (IS_MAC) {
+      expect(sel.icd).toBe("metal");
+      return;
+    }
+    expect(sel.icd).not.toBe("nvidia");
+    expect(["swiftshader", "default"]).toContain(sel.icd);
+    // NVENC needs no Vulkan library, so it stays on unless the render lands on SwiftShader.
+    expect(sel.encoder).toBe(sel.icd === "swiftshader" ? "libx264" : "h264_nvenc");
+  });
+
+  it("the NVIDIA Vulkan library without a device node is not enough", () => {
+    const sel = select({}, {
+      RIVE_RENDER_NVIDIACTL_PATH: missingNode(),
+      RIVE_RENDER_NVIDIA_VULKAN_LIB: "1",
+    });
+
+    expect(sel.icd).not.toBe("nvidia");
+    expect(sel.encoder).toBe("libx264");
+  });
+
+  it("png and screenshot configs report no encoder", () => {
+    const env = { RIVE_RENDER_NVIDIACTL_PATH: deviceNode };
+
+    expect(
+      select({ output: { format: "png", path: join(work, "unused.png"), duration: 0 } }, env).encoder
+    ).toBeUndefined();
+    expect(
+      select({ output: undefined, screenshot: { path: join(work, "unused.png") } }, env).encoder
+    ).toBeUndefined();
   });
 
   it("no device node means the GPU is not used: x264", () => {

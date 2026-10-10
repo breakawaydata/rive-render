@@ -137,20 +137,27 @@ static void outputSelectDevice(const Config& config)
 {
     const IcdInputs inputs = currentIcdInputs(config.swiftshader);
     const IcdSelection icd = selectIcd(inputs);
+    // Only ffmpeg outputs have an encoder; a screenshot or png output has none.
     std::string encoder;
-    if (config.output.format == "gif")
+    const auto& format = config.output.format;
+    if (config.hasScreenshot())
+        encoder = "";
+    else if (format == "gif")
         encoder = "gif";
-    else
+    else if (format == "mp4" || format == "webm")
         encoder = videoCodecName(resolveVideoCodec(config.output, autoSelectsNvenc(inputs, icd)));
 
     std::cout << "{\"success\":true,\"icd\":\"" << jsonEscape(icd.kind) << "\"";
     if (!icd.icdPath.empty())
         std::cout << ",\"icdFile\":\"" << jsonEscape(icd.icdPath) << "\"";
-    std::cout << ",\"encoder\":\"" << jsonEscape(encoder) << "\"}" << std::endl;
+    if (!encoder.empty())
+        std::cout << ",\"encoder\":\"" << jsonEscape(encoder) << "\"";
+    std::cout << "}" << std::endl;
 }
 
 // Render `config` into the ffmpeg process `open` starts, streaming each frame as it is drawn.
-// Returns the frame count. A partial output file is removed when anything fails.
+// Returns the frame count. A partial output file is removed when the encode fails after the
+// first frame was handed to ffmpeg.
 static int renderIntoEncoder(const Config& config, const std::vector<uint8_t>& rivBytes,
                              const std::function<std::unique_ptr<FfmpegEncoder>()>& open)
 {
@@ -171,7 +178,10 @@ static int renderIntoEncoder(const Config& config, const std::vector<uint8_t>& r
     catch (...)
     {
         encoder.reset(); // kills and reaps ffmpeg before the file is removed
-        std::remove(config.output.path.c_str());
+        // Only a run that got a frame to ffmpeg can have written the file; before that, a file at
+        // this path is the user's own and stays.
+        if (frames > 0)
+            std::remove(config.output.path.c_str());
         throw;
     }
     return frames;

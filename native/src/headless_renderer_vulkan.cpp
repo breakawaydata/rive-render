@@ -32,10 +32,12 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
 
     // Choose the Vulkan driver (NVIDIA GPU, bundled SwiftShader or the loader default) before
     // rive_vk_bootstrap loads the Vulkan library. Logged to stderr: stdout carries the JSON result.
-    // Only the first renderer of the process logs; an NVENC fallback builds a second one.
+    // Only the first renderer of the process logs the choice; an NVENC fallback builds a second
+    // one.
     static bool logged = false;
-    IcdSelection icd = applyIcdSelection(selectIcd(currentIcdInputs(useSwiftShader)));
-    if (!logged)
+    const IcdInputs inputs = currentIcdInputs(useSwiftShader);
+    IcdSelection icd = applyIcdSelection(selectIcd(inputs));
+    auto logIcd = [&icd]()
     {
         std::cerr << "rive-render: Vulkan ICD " << icd.kind;
         if (!icd.icdPath.empty())
@@ -43,24 +45,51 @@ HeadlessRenderer::HeadlessRenderer(int width, int height, bool useSwiftShader)
             std::cerr << " (" << icd.icdPath << ")";
         }
         std::cerr << std::endl;
+    };
+    if (!logged)
+    {
+        logIcd();
     }
 
-    m_impl->instance = VulkanInstance::Create(VulkanInstance::Options{
-        .appName = "rive-render",
-        .idealAPIVersion = VK_API_VERSION_1_3,
-    });
-    if (!m_impl->instance)
+    // Returns what failed, or nullptr.
+    auto createInstanceAndDevice = [this]() -> const char*
     {
-        throw std::runtime_error("Failed to create Vulkan instance");
-    }
+        m_impl->instance = VulkanInstance::Create(VulkanInstance::Options{
+            .appName = "rive-render",
+            .idealAPIVersion = VK_API_VERSION_1_3,
+        });
+        if (!m_impl->instance)
+        {
+            return "Failed to create Vulkan instance";
+        }
+        m_impl->device = VulkanDevice::Create(*m_impl->instance, VulkanDevice::Options{
+                                                                     .headless = true,
+                                                                 });
+        if (!m_impl->device)
+        {
+            return "Failed to create Vulkan device. Is a Vulkan driver (or SwiftShader) "
+                   "available?";
+        }
+        return nullptr;
+    };
 
-    m_impl->device = VulkanDevice::Create(*m_impl->instance, VulkanDevice::Options{
-                                                                 .headless = true,
-                                                             });
-    if (!m_impl->device)
+    const char* failure = createInstanceAndDevice();
+    if (failure != nullptr && icd.kind == "nvidia")
     {
-        throw std::runtime_error("Failed to create Vulkan device. Is a Vulkan driver "
-                                 "(or SwiftShader) available?");
+        // The NVIDIA driver was our own pick (never the caller's ICD or swiftshader:true) and it
+        // does not work here, e.g. the node exists but the driver is not usable. Try the next
+        // driver once before giving up.
+        std::cerr << "rive-render: " << failure
+                  << " with the nvidia ICD; retrying with the next driver" << std::endl;
+        m_impl->device.reset();
+        m_impl->instance.reset();
+        icd = applyIcdSelection(fallbackIcd(inputs));
+        logIcd();
+        failure = createInstanceAndDevice();
+    }
+    if (failure != nullptr)
+    {
+        throw std::runtime_error(failure);
     }
     if (!logged)
     {
